@@ -1,5 +1,5 @@
 ## Main usage
-- *load_exp.py* contains classes to load data from single experiments, including behavior
+- **load_exp.py** contains classes to load data from single experiments, including behavior
 and simultaneous neuropixels ephys.
   - `ExpObj` provides the main interface to load an experiment. Typically, a dataset object is
   loaded first, containing information about all experiments performed for a project.
@@ -10,7 +10,7 @@ and simultaneous neuropixels ephys.
 	                  # where this is located
 	exp = ExpObj(dset_obj=dset, dset_ind=5)  # loads expref 5 into exp
 	exp.plt_exp()  # visualizes experiment```
-- *analysis_fns.py* contains functions to load and plot entire datasets, comprised of
+- **analysis_fns.py** contains functions to load and plot entire datasets, comprised of
 many experiments.
   - `ephys_all = get_ephys_all()` parses a dataset for all experiments containing recordings from
   a particular region
