@@ -4,7 +4,10 @@ import scipy.signal as sp_signal
 import matplotlib.pyplot as plt
 from types import SimpleNamespace
 
-plt.style.use('publication_ml')
+try:
+    plt.style.use('publication_ml')
+except:
+    pass
 
 
 # Tools to load and preprocess dataset
