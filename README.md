@@ -1,20 +1,35 @@
+This package loads rodent visual behavior experiments with associated neuropixels
+data, including visualization and analysis tools.
+
+The package also includes tools to automatically register neuropixels data
+with histology, to align behavior and electrophysiological data based on shared
+TTL signals, to parse outputs from RigBox Timeline and Block files in
+a Pythonic manner, and to perform high-level analysis of the resulting outputs.
+
+[The focus now is on loading Blake Russel's ReportOpto dataset and performing
+analysis on it. Future work will make this more generalizable.]
+
 ## Main usage
 - Import the package:
 ```
 import npixloader as npl
 ```
 
-  - `npl.ExpObj` provides the main interface to load an experiment.
-  Typically, a dataset object is
-  loaded first, containing information about all experiments performed for a project.
+  - `npl.ExpObj` provides the main interface to load an experiment including behavior
+  and neuropixels components.
+  Typically, a dataset object is loaded first using `npl.DSetObj`, which containins
+  information about all experiments performed for a project.
   It is employed in the following manner:
   - 
   ```
-  dset = nl.DSetObj()  # loads dataset .csv, see dset.py for more information about
-	                  # where this is located
-  exp = nl.ExpObj(dset_obj=dset, dset_ind=5)  # loads expref 5 into exp
+  dset = npl.DSetObj(path_reportopto='path_to_reportopto_datastructure.csv') 
+	  # loads dataset .csv, see dset.py for more information about
+	  # where this is located
+  exp = npl.ExpObj(dset_obj=dset, dset_ind=5)  # loads expref 5 into exp
   exp.plt_exp()  # visualizes experiment
 ```
+![plt_exp_output](/plt_exp_out.jpg)
+	
 	
 ## Analysis
 - `npix_loader.analysis_fns` contains functions to load and plot entire datasets
