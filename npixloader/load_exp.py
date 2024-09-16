@@ -20,48 +20,49 @@ from types import SimpleNamespace
 import os
 import gc
 
-from utils import calc_alpha, smooth_spktrain
-from beh import BehData
-from ephys import EphysData
-from dset import DSetObj
-from align_ephysbeh import Aligner_EphysBeh
+from .utils import calc_alpha, smooth_spktrain
+from .beh import BehData
+from .ephys import EphysData
+from .dset import DSetObj
+from .align_ephysbeh import Aligner_EphysBeh
 
 
 class ExpObj(object):
     def __init__(self, dset_obj=None, dset_ind=None,
                  enclosing_folder=None,
                  ephys_folder='ephys_g0', beh_folder='1'):
-    """
-    This class loads the ephys and behavior files from a full
-    session from Blake Russel's ReportOpto project.
+        """
+        This class loads the ephys and behavior files from a full
+        session from Blake Russel's ReportOpto project.
 
-    The location of a session can either be specified manually
-    (using enclosing_folder, ephys_folder, beh_folder),
-    or by specifying a dataset folder (dset_obj and dset_ind)
+        The location of a session can either be specified manually
+        (using enclosing_folder, ephys_folder, beh_folder),
+        or by specifying a dataset folder (dset_obj and dset_ind)
 
-    Parameters
-    -------------
-    ** option 1: DSet loading **
-    dset_obj : DSetObj (from the module dset)
-        Indicates a DSetObj to load information about Blake's dataset
-    dset_ind : int
-        Index of dataset to load data from (specified as rows from top of
-        dataset .csv
-    ** option 2: manual folder loading **
-    enclosing folder: str
-        Location of enclosing folder (eg expref with both behavior and ephys folders
-        located inside)
-    ephys_folder : str
-        Name of ephys folder inside of enclosing folder
-    beh_folder : str
-        Name of beh folder inside of enclosing folder
+        Parameters
+        -------------
+        ** option 1: DSet loading **
+        dset_obj : DSetObj (from the module dset)
+            Indicates a DSetObj to load information about Blake's dataset
+        dset_ind : int
+            Index of dataset to load data from (specified as rows from top of
+            dataset .csv
+        ** option 2: manual folder loading **
+        enclosing folder: str
+            Location of enclosing folder (eg expref with both behavior
+            and ephys folders
+            located inside)
+        ephys_folder : str
+            Name of ephys folder inside of enclosing folder
+        beh_folder : str
+            Name of beh folder inside of enclosing folder
 
-    Main usage
-    -----------
-    from dset import DSetObj
-    dset = DSetObj()  # loads dataset .csv
-    exp = ExpObj(dset_obj=dset, dset_ind=5)  # loads expref 5 into exp
-    """
+        Main usage
+        -----------
+        from dset import DSetObj
+        dset = DSetObj()  # loads dataset .csv
+        exp = ExpObj(dset_obj=dset, dset_ind=5)  # loads expref 5 into exp
+        """
         self.folder = SimpleNamespace()
         if dset_obj is None:
             self.folder.enclosing = enclosing_folder

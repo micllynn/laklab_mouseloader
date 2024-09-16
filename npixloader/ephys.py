@@ -11,10 +11,10 @@ import matplotlib.gridspec as gs
 from types import SimpleNamespace
 import os
 
-from utils import parse_samp_rate_from_params, find_key_partialmatch, \
+from .utils import parse_samp_rate_from_params, find_key_partialmatch, \
     match_region_partial, convert_spktimes_to_spktrain, \
     smooth_spktrain
-from histology import LoadHist
+from .histology import LoadHist
 
 
 class SpikeTrain(object):

@@ -3,7 +3,7 @@ import scipy.io as sp_io
 
 from types import SimpleNamespace
 import os
-from utils import dtype_to_list, convert_rewvalue_into_floats, \
+from .utils import dtype_to_list, convert_rewvalue_into_floats, \
     find_event_onsets, smooth_squarekern, bin_signal
 
 

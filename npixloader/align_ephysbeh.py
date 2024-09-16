@@ -5,8 +5,8 @@ import pandas as pd
 from types import SimpleNamespace
 import os
 
-from utils import find_event_onsets
-from beh import TimelineParser
+from .utils import find_event_onsets
+from .beh import TimelineParser
 
 
 class Aligner_EphysBeh(object):

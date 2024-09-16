@@ -12,8 +12,8 @@ import gc
 import os
 import copy
 
-from load_exp import ExpObj
-from utils import rescale_to_frac
+from .load_exp import ExpObj
+from .utils import rescale_to_frac
 
 try:
     plt.style.use('publication_ml')
