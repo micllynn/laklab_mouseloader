@@ -16,6 +16,7 @@ import pickle
 
 from .load_exp import ExpObj_ReportOpto
 from .utils import rescale_to_frac
+from .dset import DSetObj
 
 try:
     plt.style.use('publication_ml')
@@ -25,6 +26,10 @@ except:
 
 def get_neur_count(dset, region='supplemental somatosensory',
                    start_at_ind=0):
+    """
+    Counts the number of neurons in the entire dset for a given region.
+    """
+
     region_inds = dset.get_region_inds(region)
 
     sess_count = 0
@@ -32,7 +37,7 @@ def get_neur_count(dset, region='supplemental somatosensory',
     for ind in region_inds:
         if ind >= start_at_ind:
             try:
-                exp = ExpObj(dset_obj=dset, dset_ind=ind)
+                exp = ExpObj_ReportOpto(dset_obj=dset, dset_ind=ind)
                 _count = len(np.where(
                     np.array(exp.ephys.spk.info.region) == region)[0])
                 neur_count += _count
@@ -62,6 +67,11 @@ def get_ephys_all(dset, region='supplemental somatosensory',
                   wheel_turn_thresh_opto_incorr=50,
                   wheel_turn_thresh_dir_opto_incorr='neg',
                   n_neur_max=2000):
+    """
+    Takes a dataset object and computes a set of stim- or choice-
+    aligned spiketrains for each neuron in a defined region, divided by
+    trial-type (opto, no-opto; correct, incorrect)
+    """
 
     trial_conds = ['opto', 'no_opto']
     choice_conds = ['corr', 'incorr']
@@ -107,7 +117,7 @@ def get_ephys_all(dset, region='supplemental somatosensory',
         if ind >= start_at_ind:
             try:
                 print('--------------')
-                _exp = ExpObj(dset_obj=dset, dset_ind=ind)
+                _exp = ExpObj_ReportOpto(dset_obj=dset, dset_ind=ind)
                 _ephys_rec = _exp.get_aligned_ephys(
                     region=[region], ref=ref,
                     t_pre=t_pre, t_post=t_post,
@@ -280,6 +290,10 @@ def get_ephys_all_dict(dset,
                                'caudoputamen',
                                'thalamus'],
                        **kwargs):
+    """
+    Runs get_ephys_all, but on a list of regions.
+    """
+
     ephys_all_dict = {}
     for reg in region:
         ephys_all_dict[reg] = get_ephys_all(
@@ -288,7 +302,7 @@ def get_ephys_all_dict(dset,
     return ephys_all_dict
 
 
-def plt_ephys_all_ordered(ephys_all,
+def plt_ephys_all_ordered(get_ephys_all_obj,
                           figsize=(3.43, 3.43),
                           time=None,
                           ref='stim', sorting='time',
@@ -297,8 +311,15 @@ def plt_ephys_all_ordered(ephys_all,
                           cmap_equal_pos_neg=True,
                           resample_hits_equal_n_tr=False,
                           len_metrics=20):
-    os.chdir('/Users/michaellynn/Desktop/postdoc/projects/ReportOpto_BR_MBL')
-    ephys_all_cp = copy.deepcopy(ephys_all)
+    """
+    Takes the output object from get_ephys_all(), and plots an average
+    activity trace for each trial-type.
+    """
+
+    try:
+        os.chdir('/Users/michaellynn/Desktop/postdoc/projects/ReportOpto_BR_MBL')
+
+    ephys_all_cp = copy.deepcopy(get_ephys_all_obj)
 
     # if resample_hits_equal_n_tr is True:
     #     for neur in range(ephys_all_cp.avg.opto.corr.shape[0]):
@@ -422,21 +443,26 @@ def plt_ephys_all_ordered(ephys_all,
     fig.colorbar(im_n_sess, cax=ax_cbar_n_sess, fraction=0.05)
     fig.colorbar(im_n_tr, cax=ax_cbar_n_tr, fraction=0.05)
 
-    fig.savefig(f'neur_activ_{ephys_all.params.region}_{sorting=}_{ref=}_'
-                + f'{ephys_all.params.wheel_turn_thresh_opto_incorr=}_'
-                + f'{ephys_all.params.filter_high_perf=}_'
+    fig.savefig(f'neur_activ_{get_ephys_all_obj.params.region}_{sorting=}_{ref=}_'
+                + f'{get_ephys_all_obj.params.wheel_turn_thresh_opto_incorr=}_'
+                + f'{get_ephys_all_obj.params.filter_high_perf=}_'
                 + f'{resample_hits_equal_n_tr=}.pdf')
 
     plt.show()
     return
 
 
-def plt_ephys_all_grandavg(dict_activ, figsize=(6.86, 1.5),
+def plt_ephys_all_grandavg(get_ephys_all_dict_obj, figsize=(6.86, 1.5),
                            ref='stim', sort_by_diff=False,
                            sort_frac=[0, 0.25],
                            xlim=[-0.2, 0.5],
                            title_fontsize=8):
-    dict_activ_cp = copy.deepcopy(dict_activ)
+    """
+    Takes the output object from get_ephys_all_dict(), and plots an average
+    activity trace for each region in each trial-type.
+    """
+
+    dict_activ_cp = copy.deepcopy(get_ephys_all_dict_obj)
     region = dict_activ_cp.keys()
 
     if sort_by_diff is True:
@@ -706,7 +732,7 @@ def extract_beh_metrics_dset(figsize=(6.86, 6.86),
         print(f'\n{ind_abs_dset}/{len_dset} recs...')
         print('------------------')
         try:
-            exp = ExpObj(dset_obj=dset, dset_ind=ind_abs_dset)
+            exp = ExpObj_ReportOpto(dset_obj=dset, dset_ind=ind_abs_dset)
             exp.beh.add_metrics(kern_perf_fast=kern_perf_fast,
                                 kern_rew_rate=kern_rew_rate,
                                 kern_t_react=kern_t_react)
@@ -1341,10 +1367,12 @@ class NeurEventResp(object):
                     if trial2 > trial1:
                         if np.random.rand() < reduce_n_trialcomps_frac:
                             _pearsonr = sp_stats.pearsonr(
-                                norm_data(_ephys[trial1,
-                                       _ind_t_corr_pre:_ind_t_corr_post]),
-                                norm_data(_ephys[trial2,
-                                       _ind_t_corr_pre:_ind_t_corr_post]))[0]
+                                norm_data(_ephys[
+                                    trial1,
+                                    _ind_t_corr_pre:_ind_t_corr_post]),
+                                norm_data(_ephys[
+                                    trial2,
+                                    _ind_t_corr_pre:_ind_t_corr_post]))[0]
                             _pearsonr_all.append(_pearsonr)
 
             self.reliability.stim[region][neur] = np.nanmean(_pearsonr_all)
@@ -1359,7 +1387,7 @@ class NeurEventResp(object):
         _ind_t_corr_pre = np.argmin(np.abs(
             self.ephys.choice[region].t - (-1*t_corr_pre)))
         _ind_t_corr_post = np.argmin(np.abs(
-            self.ephys.choice[region].t - t_corr_post))    
+            self.ephys.choice[region].t - t_corr_post))
 
         self.reliability.choice[region] = np.zeros(n_neurs)
 
@@ -1374,10 +1402,12 @@ class NeurEventResp(object):
                     if trial2 > trial1:
                         if np.random.rand() < reduce_n_trialcomps_frac:
                             _pearsonr = sp_stats.pearsonr(
-                                norm_data(_ephys[trial1,
-                                       _ind_t_corr_pre:_ind_t_corr_post]),
-                                norm_data(_ephys[trial2,
-                                       _ind_t_corr_pre:_ind_t_corr_post]))[0]
+                                norm_data(_ephys[
+                                    trial1,
+                                    _ind_t_corr_pre:_ind_t_corr_post]),
+                                norm_data(_ephys[
+                                    trial2,
+                                    _ind_t_corr_pre:_ind_t_corr_post]))[0]
                             _pearsonr_all.append(_pearsonr)
 
             self.reliability.choice[region][neur] = np.nanmean(_pearsonr_all)

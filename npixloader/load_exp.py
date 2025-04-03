@@ -19,6 +19,7 @@ import pandas as pd
 
 from types import SimpleNamespace
 import os
+import pathlib
 import gc
 import warnings
 
@@ -377,9 +378,10 @@ class ExpObj_ReportOpto(object):
 
         # save and show
         # --------------
-        _enclosing_fold_splt = self.folder.enclosing.split('/')
-        _mouse = _enclosing_fold_splt[3]
-        _date = _enclosing_fold_splt[4]
+        _enclosing_fold_splt = pathlib.Path(self.folder.enclosing).parts
+        # _enclosing_fold_splt = self.folder.enclosing.split('/')
+        _mouse = _enclosing_fold_splt[-2]
+        _date = _enclosing_fold_splt[-1]
 
         self.plt.fig.suptitle(f'{_mouse} {_date}', fontsize=10)
 

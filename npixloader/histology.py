@@ -107,8 +107,10 @@ class ChCoordMap(object):
         # sort by DV, and adjust to Bregma coordinates
         _sorting_inds = np.argsort(self._coords[:, 2])
         self._coords = self._coords[_sorting_inds, :]
-        self._coords[:, 0] -= 570
-        self._coords[:, 2] += 660
+        # self._coords[:, 0] -= 570
+        # self._coords[:, 2] += 660
+
+        self._coords = self._coords * 10
 
     def ch_to_coords(self, ch):
         return self._coords[ch, :]
