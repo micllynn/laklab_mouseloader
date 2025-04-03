@@ -67,6 +67,7 @@ class ChRegionMap(object):
         with open(os.path.join(folder, probe_file), 'rb') as f:
             self.probe = pickle.load(f)
 
+        # get regions
         _regions = np.flip(self.probe['data']['label_name'])
         _ch_count_in_reg = np.flip(self.probe['data']['region_sites'])
         _n_chs = np.sum(_ch_count_in_reg).astype(int)
@@ -86,19 +87,68 @@ class ChRegionMap(object):
         return self._map.regs[ch]
 
 
+class ChCoordMap(object):
+    def __init__(self, folder='../HERBS', probe_file='probe 0.pkl'):
+        """
+        Constructs a mapping between channel number and region label,
+        using HERBS files for probes.
+        """
+        print('\tmaking ch->coordinate map...')
+        print('\t\tgetting HERBS probe file...')
+        with open(os.path.join(folder, probe_file), 'rb') as f:
+            self.probe = pickle.load(f)
+
+        self._coord_labels = ['ML', 'AP', 'DV']
+
+        _coords_raw = self.probe['data']['sites_loc_b']
+        self._coords = np.concatenate((_coords_raw[0], _coords_raw[1],
+                                       _coords_raw[2], _coords_raw[3]), axis=0)
+
+        # sort by DV, and adjust to Bregma coordinates
+        _sorting_inds = np.argsort(self._coords[:, 2])
+        self._coords = self._coords[_sorting_inds, :]
+        self._coords[:, 0] -= 570
+        self._coords[:, 2] += 660
+
+    def ch_to_coords(self, ch):
+        return self._coords[ch, :]
+
+
 class LoadHist(object):
-    def __init__(self, expref, ephys_folder='ephys_g0'):
+    def __init__(self, expref, ephys_folder='ephys_g0',
+                 probe_file_name='probe_file.txt',
+                 n_folders_back_herbs_dir=1):
         print('loading histology...')
         os.chdir(expref)
+
+        # setup HERBS directory location
+        if n_folders_back_herbs_dir == 1:
+            path_to_herbs_folder = '../HERBS'
+        if n_folders_back_herbs_dir == 2:
+            path_to_herbs_folder = '../../HERBS'
+
         # get probe file name
-        with open('probe_file.txt', 'r') as f:
+        with open(probe_file_name, 'r') as f:
             probe_file_name = str(f.read())
 
         self.map_clust_ch = ClustChMap(folder=ephys_folder)
-        self.map_ch_region = ChRegionMap(folder='../HERBS',
+        self.map_ch_region = ChRegionMap(folder=path_to_herbs_folder,
                                          probe_file=probe_file_name)
+        self.map_ch_coords = ChCoordMap(folder=path_to_herbs_folder,
+                                        probe_file=probe_file_name)
 
     def get_clust_region(self, clust_id):
         _ch = self.map_clust_ch.clust_to_ch(clust_id)
         _reg = self.map_ch_region.ch_to_reg(_ch)
         return _reg
+
+    def get_clust_coords(self, clust_id):
+        _ch = self.map_clust_ch.clust_to_ch(clust_id)
+        _coords_raw = self.map_ch_coords.ch_to_coords(_ch)
+
+        coord = SimpleNamespace()
+        coord.ml = _coords_raw[0]
+        coord.ap = _coords_raw[1]
+        coord.dv = _coords_raw[2]
+
+        return coord

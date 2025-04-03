@@ -6,13 +6,15 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gs
 import seaborn as sns
+import pandas as pd
 
 from types import SimpleNamespace
 import gc
 import os
 import copy
+import pickle
 
-from .load_exp import ExpObj
+from .load_exp import ExpObj_ReportOpto
 from .utils import rescale_to_frac
 
 try:
@@ -57,7 +59,7 @@ def get_ephys_all(dset, region='supplemental somatosensory',
                   kern_fr_sd=25, sampling_rate=100,
                   get_zscore=True,
                   filter_high_perf=None,
-                  wheel_turn_thresh_opto_incorr=None,
+                  wheel_turn_thresh_opto_incorr=50,
                   wheel_turn_thresh_dir_opto_incorr='neg',
                   n_neur_max=2000):
 
@@ -290,12 +292,12 @@ def plt_ephys_all_ordered(ephys_all,
                           figsize=(3.43, 3.43),
                           time=None,
                           ref='stim', sorting='time',
-                          max_threshold_factor=2,
+                          cmap_lims=[-3, 3],
                           cmap=sns.diverging_palette(220, 20, as_cmap=True),
                           cmap_equal_pos_neg=True,
                           resample_hits_equal_n_tr=False,
                           len_metrics=20):
-    os.chdir('/Users/michaellynn/Desktop/postdoc/proj/blake_perception_popanalysis')
+    os.chdir('/Users/michaellynn/Desktop/postdoc/projects/ReportOpto_BR_MBL')
     ephys_all_cp = copy.deepcopy(ephys_all)
 
     # if resample_hits_equal_n_tr is True:
@@ -326,11 +328,17 @@ def plt_ephys_all_ordered(ephys_all,
         sort_inds_corr = np.argsort(np.argmax(
             ephys_all_cp.avg.opto.corr, axis=1))
     elif sorting == 'diff':
-        diff_corr_incorr = np.max(np.abs(
-            ephys_all_cp.avg.opto.corr), axis=1) \
-            - np.max(np.abs(
-                ephys_all_cp.avg.opto.incorr),
-                axis=1)
+        # diff_corr_incorr = np.max(np.abs(
+        #     ephys_all_cp.avg.opto.corr), axis=1) \
+        #     - np.max(np.abs(
+        #         ephys_all_cp.avg.opto.incorr),
+        #         axis=1)
+
+        diff_corr_incorr = np.abs(np.max(
+            ephys_all_cp.avg.opto.corr
+            - ephys_all_cp.avg.opto.incorr,
+            axis=1))
+
         # diff_corr_incorr = ephys_all_cp.avg.opto.corr - ephys_all_cp.avg.opto.incorr
 
         sort_inds_corr = np.flip(np.argsort(diff_corr_incorr))
@@ -354,10 +362,14 @@ def plt_ephys_all_ordered(ephys_all,
     ax_cbar_n_tr = fig.add_subplot(spec[0, 5])
     ax_cbar_n_sess = fig.add_subplot(spec[0, 6])
 
-    vmin = np.min(mean_act_corr)
-    vmax = np.max(mean_act_corr)/max_threshold_factor
-    if cmap_equal_pos_neg is True:
-        vmin = -1 * vmax
+    if cmap_lims is None:
+        vmin = np.min(mean_act_corr)
+        vmax = np.max(mean_act_corr)
+        if cmap_equal_pos_neg is True:
+            vmin = -1 * vmax
+    else:
+        vmin = cmap_lims[0]
+        vmax = cmap_lims[1]
 
     if resample_hits_equal_n_tr is True:
         for neur in range(ephys_all_cp.avg.opto.corr.shape[0]):
@@ -980,7 +992,6 @@ def plt_corr_beh_metrics(metrics,
                                   ax_corr_perf_vs_react_t.get_ylim()[1]],
                                  '--', color='k')
 
-
     # analyze and plot for fig2
     # -------------
     pop = SimpleNamespace()
@@ -1095,3 +1106,662 @@ def plt_corr_beh_metrics(metrics,
 
     return linreg
 
+
+def norm_data(data):
+    mean = np.mean(data)
+    std = np.std(data)
+
+    data_norm = (data - mean) / std
+
+    return data_norm
+
+
+class MovementCtrl(object):
+    def __init__(self, exp,
+                 region='supplemental somatosensory',
+                 t_pre=1, t_post=1):
+        """
+        Takes an ExpObj and plots movement control graphs, including a single
+        neuron's activity over all trials sorted by
+        """
+        # extract behavior and ephys
+        self.exp = exp
+        self.params = SimpleNamespace()
+        self.params.t_pre = t_pre
+        self.params.t_post = t_post
+        self.region = region
+
+        self._inds_opto = self.exp.beh.get_subset_trials(
+            trial_type_opto=True, correct=True).inds
+        self.exp.beh.add_metrics()
+        self._rxn_times = exp.beh.metrics.reaction_time_all[self._inds_opto]
+        self._rxn_times_sort = np.argsort(self._rxn_times)
+        self.aligned_ephys_stim = self.exp.get_aligned_ephys(
+            region=region,
+            ref='stim',
+            t_pre=t_pre, t_post=t_post)
+        self.aligned_ephys_choice = self.exp.get_aligned_ephys(
+            region=region,
+            ref='choice',
+            t_pre=t_pre, t_post=t_post)
+
+    def plt_single_neur(self, neur_ind=0, rxn_markersize=20,
+                        stim_t_corr_pre=0, stim_t_corr_post=0.4,
+                        choice_t_corr_pre=0.4, choice_t_corr_post=0,
+                        plt_type='imshow', corr_downsample=0.2):
+        self.params.t_corr_pre = stim_t_corr_pre
+        self.params.t_corr_post = stim_t_corr_post
+
+        # extract single neuron firing rate
+        # neur_ind=0
+        self.stim = SimpleNamespace()
+        self.choice = SimpleNamespace()
+
+        self.stim._neurresp = self.aligned_ephys_stim.opto.corr[
+            self.region][:, neur_ind, :]
+        self.stim._neurresp_sorted = self.stim._neurresp[self._rxn_times_sort]
+        self.choice._neurresp = self.aligned_ephys_choice.opto.corr[
+            self.region][:, neur_ind, :]
+        self.choice._neurresp_sorted = self.choice._neurresp[self._rxn_times_sort]
+
+        _t_start = self.aligned_ephys_stim.opto.t[0]
+        _t_end = self.aligned_ephys_stim.opto.t[-1]
+
+        # run correlation between all pairs of trials
+        _ind_stim_t_corr_pre = np.argmin(np.abs(
+            self.aligned_ephys_stim.opto.t - (-1*stim_t_corr_pre)))
+        _ind_stim_t_corr_post = np.argmin(np.abs(
+            self.aligned_ephys_stim.opto.t - stim_t_corr_post))
+        _ind_choice_t_corr_pre = np.argmin(np.abs(
+            self.aligned_ephys_choice.opto.t - (-1*choice_t_corr_pre)))
+        _ind_choice_t_corr_post = np.argmin(np.abs(
+            self.aligned_ephys_choice.opto.t - choice_t_corr_post))
+
+        self.stim._all_corrs = []
+        self.choice._all_corrs = []
+        for trial1 in range(self.stim._neurresp_sorted.shape[0]):
+            for trial2 in range(self.stim._neurresp_sorted.shape[0]):
+                if trial2 > trial1:
+                    _pearsonr_stim = sp_stats.pearsonr(
+                        norm_data(self.stim._neurresp_sorted[
+                            trial1, _ind_stim_t_corr_pre:_ind_stim_t_corr_post]),
+                        norm_data(self.stim._neurresp_sorted[
+                            trial2, _ind_stim_t_corr_pre:_ind_stim_t_corr_post]))[0]
+                    self.stim._all_corrs.append(_pearsonr_stim)
+
+                    _pearsonr_choice = sp_stats.pearsonr(
+                        norm_data(self.choice._neurresp_sorted[
+                            trial1, _ind_choice_t_corr_pre:_ind_choice_t_corr_post]),
+                        norm_data(self.choice._neurresp_sorted[
+                            trial2, _ind_choice_t_corr_pre:_ind_choice_t_corr_post]))[0]
+                    self.choice._all_corrs.append(_pearsonr_choice)
+
+        self.stim.mean_corr = np.nanmean(self.stim._all_corrs)
+        self.choice.mean_corr = np.nanmean(self.choice._all_corrs)
+
+        # plot the figure
+        if plt_type == 'imshow':
+            fig = plt.figure()
+            spec = gs.GridSpec(nrows=1, ncols=2, figure=fig)
+            ax_stim = fig.add_subplot(spec[0, 0])
+            ax_choice = fig.add_subplot(spec[0, 1])
+
+            ax_stim.imshow(self.stim._neurresp_sorted,
+                           aspect='auto', interpolation='none',
+                           extent=(_t_start, _t_end,
+                                   0, self.stim._neurresp_sorted.shape[0]),
+                           cmap=sns.diverging_palette(220, 20, as_cmap=True))
+            ax_stim.scatter(self._rxn_times[self._rxn_times_sort],
+                            np.arange(self._rxn_times_sort.shape[0], 0, -1),
+                            color=sns.xkcd_rgb['grass green'], s=rxn_markersize)
+            ax_stim.axvline(0, color=sns.xkcd_rgb['cerulean'], linewidth=2)
+
+            ax_choice.imshow(self.choice._neurresp_sorted,
+                             aspect='auto', interpolation='none',
+                             extent=(_t_start, _t_end,
+                                     0, self.choice._neurresp_sorted.shape[0]),
+                             cmap=sns.diverging_palette(220, 20, as_cmap=True))
+            ax_choice.scatter(-1 * self._rxn_times[self._rxn_times_sort],
+                              np.arange(self._rxn_times_sort.shape[0], 0, -1),
+                              color=sns.xkcd_rgb['cerulean'], s=rxn_markersize)
+            ax_choice.axvline(0, color=sns.xkcd_rgb['grass green'], linewidth=2)
+
+            ax_stim.set_xlabel('time from stim (s)')
+            ax_stim.set_ylabel('trial')
+            ax_stim.set_title(f'stim reliability: {self.stim.mean_corr:.3f}')
+            ax_choice.set_xlabel('time from choice (s)')
+            ax_choice.set_ylabel('trial')
+            ax_choice.set_title(f'choice reliability: {self.choice.mean_corr:.3f}')
+
+        if plt_type == 'imshow_unordered':
+            fig = plt.figure()
+            spec = gs.GridSpec(nrows=1, ncols=2, figure=fig)
+            ax_stim = fig.add_subplot(spec[0, 0])
+            ax_choice = fig.add_subplot(spec[0, 1])
+
+            ax_stim.imshow(self.stim._neurresp,
+                           aspect='auto', interpolation='none',
+                           extent=(_t_start, _t_end,
+                                   0, self.stim._neurresp_sorted.shape[0]),
+                           cmap=sns.diverging_palette(220, 20, as_cmap=True))
+            ax_stim.scatter(self._rxn_times,
+                            np.arange(self._rxn_times.shape[0], 0, -1),
+                            color=sns.xkcd_rgb['grass green'], s=rxn_markersize)
+            ax_stim.axvline(0, color=sns.xkcd_rgb['cerulean'], linewidth=2)
+
+            ax_choice.imshow(self.choice._neurresp,
+                             aspect='auto', interpolation='none',
+                             extent=(_t_start, _t_end,
+                                     0, self.choice._neurresp.shape[0]),
+                             cmap=sns.diverging_palette(220, 20, as_cmap=True))
+            ax_choice.scatter(-1 * self._rxn_times,
+                              np.arange(self._rxn_times.shape[0], 0, -1),
+                              color=sns.xkcd_rgb['cerulean'], s=rxn_markersize)
+            ax_choice.axvline(0, color=sns.xkcd_rgb['grass green'], linewidth=2)
+
+            ax_stim.set_xlabel('time from stim (s)')
+            ax_stim.set_ylabel('trial')
+            ax_stim.set_title(f'stim reliability: {self.stim.mean_corr:.3f}')
+            ax_choice.set_xlabel('time from choice (s)')
+            ax_choice.set_ylabel('trial')
+            ax_choice.set_title(f'choice reliability: {self.choice.mean_corr:.3f}')
+
+        elif plt_type == 'plot':
+            fig = plt.figure()
+            spec = gs.GridSpec(nrows=1, ncols=2, figure=fig)
+            ax_stim = fig.add_subplot(spec[0, 0])
+            ax_choice = fig.add_subplot(spec[0, 1])
+
+            for tr in range(self.stim._neurresp_sorted.shape[0]):
+
+                ax_stim.plot(self.aligned_ephys_stim.opto.t,
+                             tr+self.stim._neurresp_sorted[tr, :]*0.25, 'k',
+                             alpha=0.5)
+                ax_choice.plot(self.aligned_ephys_choice.opto.t,
+                               tr+self.choice._neurresp_sorted[tr, :]*0.25, 'k',
+                               alpha=0.5)
+
+            ax_stim.scatter(self._rxn_times[self._rxn_times_sort],
+                            np.arange(self._rxn_times_sort.shape[0], 0, -1),
+                            color=sns.xkcd_rgb['grass green'], s=rxn_markersize)
+            ax_stim.axvline(0, color=sns.xkcd_rgb['cerulean'], linewidth=2)
+            ax_choice.scatter(-1 * self._rxn_times[self._rxn_times_sort],
+                              np.arange(self._rxn_times_sort.shape[0], 0, -1),
+                              color=sns.xkcd_rgb['cerulean'], s=rxn_markersize)
+            ax_choice.axvline(0, color=sns.xkcd_rgb['grass green'], linewidth=2)
+
+            ax_stim.set_xlabel('time from stim (s)')
+            ax_stim.set_ylabel('trial')
+            ax_stim.set_title(f'stim reliability: {self.stim.mean_corr:.3f}')
+            ax_choice.set_xlabel('time from choice (s)')
+            ax_choice.set_ylabel('trial')
+            ax_choice.set_title(f'choice reliability: {self.choice.mean_corr:.3f}')
+
+        plt.show()
+
+
+class NeurEventResp(object):
+    def __init__(self, path_to_stim_ephys, path_to_choice_ephys):
+        self.ephys = SimpleNamespace()
+
+        with open(path_to_stim_ephys, 'rb') as f:
+            self.ephys.stim = pickle.load(f)
+        with open(path_to_choice_ephys, 'rb') as f:
+            self.ephys.choice = pickle.load(f)
+
+        self.regions = ['supplemental somatosensory',
+                        'thalamus',
+                        'caudoputamen']
+
+        self.reliability = SimpleNamespace(stim={},
+                                           choice={})
+
+    def calc_stim_locking(self, region='supplemental somatosensory',
+                          t_corr_pre=0.5, t_corr_post=0.5,
+                          reduce_n_trialcomps_frac=1):
+        print('calculating stim locking...')
+
+        n_neurs = self.ephys.stim[region].tr.opto.corr.shape[0]
+
+        _ind_t_corr_pre = np.argmin(np.abs(
+            self.ephys.stim[region].t - (-1*t_corr_pre)))
+        _ind_t_corr_post = np.argmin(np.abs(
+            self.ephys.stim[region].t - t_corr_post))    
+
+        self.reliability.stim[region] = np.zeros(n_neurs)
+
+        for neur in range(n_neurs):
+            print(f'\t{neur=}\r', end="")
+            # run correlation between all pairs of trials
+            _ephys = self.ephys.stim[region].tr.opto.corr[neur]
+
+            _pearsonr_all = []
+            for trial1 in range(_ephys.shape[0]):
+                for trial2 in range(_ephys.shape[0]):
+                    if trial2 > trial1:
+                        if np.random.rand() < reduce_n_trialcomps_frac:
+                            _pearsonr = sp_stats.pearsonr(
+                                norm_data(_ephys[trial1,
+                                       _ind_t_corr_pre:_ind_t_corr_post]),
+                                norm_data(_ephys[trial2,
+                                       _ind_t_corr_pre:_ind_t_corr_post]))[0]
+                            _pearsonr_all.append(_pearsonr)
+
+            self.reliability.stim[region][neur] = np.nanmean(_pearsonr_all)
+
+    def calc_choice_locking(self, region='supplemental somatosensory',
+                            t_corr_pre=0.5, t_corr_post=0.5,
+                            reduce_n_trialcomps_frac=1):
+        print('calculating choice locking...')
+
+        n_neurs = self.ephys.choice[region].tr.opto.corr.shape[0]
+
+        _ind_t_corr_pre = np.argmin(np.abs(
+            self.ephys.choice[region].t - (-1*t_corr_pre)))
+        _ind_t_corr_post = np.argmin(np.abs(
+            self.ephys.choice[region].t - t_corr_post))    
+
+        self.reliability.choice[region] = np.zeros(n_neurs)
+
+        for neur in range(n_neurs):
+            print(f'\t{neur=}\r', end="")
+            # run correlation between all pairs of trials
+            _ephys = self.ephys.choice[region].tr.opto.corr[neur]
+
+            _pearsonr_all = []
+            for trial1 in range(_ephys.shape[0]):
+                for trial2 in range(_ephys.shape[0]):
+                    if trial2 > trial1:
+                        if np.random.rand() < reduce_n_trialcomps_frac:
+                            _pearsonr = sp_stats.pearsonr(
+                                norm_data(_ephys[trial1,
+                                       _ind_t_corr_pre:_ind_t_corr_post]),
+                                norm_data(_ephys[trial2,
+                                       _ind_t_corr_pre:_ind_t_corr_post]))[0]
+                            _pearsonr_all.append(_pearsonr)
+
+            self.reliability.choice[region][neur] = np.nanmean(_pearsonr_all)
+
+    def calc_all(self, stim_t_pre=0, stim_t_post=0.4,
+                 choice_t_pre=0.4, choice_t_post=0,
+                 speed_frac=0.25):
+        for reg in self.regions:
+            print(f'\n\n{reg}\n-------------')
+            print('stim...')
+            self.calc_stim_locking(region=reg,
+                                   t_corr_pre=stim_t_pre,
+                                   t_corr_post=stim_t_post,
+                                   reduce_n_trialcomps_frac=speed_frac)
+            print('choice...')
+            self.calc_choice_locking(region=reg,
+                                     t_corr_pre=choice_t_pre,
+                                     t_corr_post=choice_t_post,
+                                     reduce_n_trialcomps_frac=speed_frac)
+        return
+
+    def pickle_save(self):
+        with open('ephys_neurresp.pkl', 'wb') as f:
+            pickle.dump(self.reliability, f)
+        return
+
+
+def plt_reliability(neur_event_resp_obj, thresh=0.1, figsize=(3.43, 3.43)):
+
+    regions = neur_event_resp_obj.choice.keys()
+    frac_neurs = {}
+
+    # calculate
+    for reg in regions:
+        frac_neurs[reg] = SimpleNamespace()
+
+        _n_neurs = neur_event_resp_obj.stim[reg].shape[0]
+        _resp_bool_choice = neur_event_resp_obj.stim[reg] > thresh
+        _resp_bool_stim = neur_event_resp_obj.choice[reg] > thresh
+
+        _n_none = np.sum(np.logical_and(_resp_bool_choice == False,
+                                        _resp_bool_stim == False))
+        _n_choice = np.sum(np.logical_and(_resp_bool_choice == True,
+                                          _resp_bool_stim == False))
+        _n_stim = np.sum(np.logical_and(_resp_bool_choice == False,
+                                        _resp_bool_stim == True))
+        _n_stim_and_choice = np.sum(np.logical_and(
+            _resp_bool_choice == True,
+            _resp_bool_stim == True))
+
+        frac_neurs[reg].none = _n_none/_n_neurs
+        frac_neurs[reg].choice = _n_choice/_n_neurs
+        frac_neurs[reg].stim = _n_stim/_n_neurs
+        frac_neurs[reg].stim_choice = _n_stim_and_choice/_n_neurs
+
+    # plot
+    colors = {}
+    colors['supplemental somatosensory'] = sns.xkcd_rgb['blue green']
+    colors['caudoputamen'] = sns.xkcd_rgb['powder blue']
+    colors['thalamus'] = sns.xkcd_rgb['pinkish']
+
+    fig = plt.figure(figsize=figsize)
+    spec = gs.GridSpec(nrows=1, ncols=3,
+                       figure=fig)
+    ax_s2 = fig.add_subplot(spec[0, 0])
+    ax_thal = fig.add_subplot(spec[0, 1])
+    ax_caudoputamen = fig.add_subplot(spec[0, 2])
+
+    ax_s2.pie([frac_neurs['supplemental somatosensory'].none,
+               frac_neurs['supplemental somatosensory'].choice,
+               frac_neurs['supplemental somatosensory'].stim,
+               frac_neurs['supplemental somatosensory'].stim_choice],
+              labels=['none', 'choice', 'stim', 'stim+choice'],
+              colors=[sns.xkcd_rgb['grey'],
+                      sns.xkcd_rgb['blue green'],
+                      sns.xkcd_rgb['sage'],
+                      sns.xkcd_rgb['dark blue green']])
+    ax_s2.set_title('S2 (n=1281)')
+
+    ax_caudoputamen.pie([frac_neurs['caudoputamen'].none,
+                         frac_neurs['caudoputamen'].choice,
+                         frac_neurs['caudoputamen'].stim,
+                         frac_neurs['caudoputamen'].stim_choice],
+                        labels=['none', 'choice', 'stim', 'stim+choice'],
+                        colors=[sns.xkcd_rgb['grey'],
+                                sns.xkcd_rgb['azure'],
+                                sns.xkcd_rgb['powder blue'],
+                                sns.xkcd_rgb['blueberry']])
+    ax_caudoputamen.set_title('caudoputamen (n=940)')
+
+    ax_thal.pie([frac_neurs['thalamus'].none,
+                 frac_neurs['thalamus'].choice,
+                 frac_neurs['thalamus'].stim,
+                 frac_neurs['thalamus'].stim_choice],
+                labels=['none', 'choice', 'stim', 'stim+choice'],
+                colors=[sns.xkcd_rgb['grey'],
+                        sns.xkcd_rgb['pinkish'],
+                        sns.xkcd_rgb['pastel pink'],
+                        sns.xkcd_rgb['pinkish red']])
+    ax_thal.set_title('thalamus (n=349)')
+
+    # plot 2
+    fig_scatter = plt.figure(figsize=figsize)
+    spec = gs.GridSpec(nrows=1, ncols=3,
+                       figure=fig_scatter)
+    ax_sc_s2 = fig_scatter.add_subplot(spec[0, 0])
+    ax_sc_thal = fig_scatter.add_subplot(spec[0, 1])
+    ax_sc_caudoputamen = fig_scatter.add_subplot(spec[0, 2])
+
+    ax_sc_s2.scatter(neur_event_resp_obj.stim['supplemental somatosensory'],
+                     neur_event_resp_obj.choice['supplemental somatosensory'],
+                     color=sns.xkcd_rgb['blue green'],
+                     s=5)
+    ax_sc_thal.scatter(neur_event_resp_obj.stim['thalamus'],
+                       neur_event_resp_obj.choice['thalamus'],
+                       color=sns.xkcd_rgb['pinkish'],
+                       s=5)
+    ax_sc_caudoputamen.scatter(neur_event_resp_obj.stim['caudoputamen'],
+                               neur_event_resp_obj.choice['caudoputamen'],
+                               color=sns.xkcd_rgb['powder blue'],
+                               s=5)
+
+    for _ax in [ax_sc_s2, ax_sc_thal, ax_sc_caudoputamen]:
+        _ax.set_xlabel('stim locked')
+        _ax.set_ylabel('choice locked')
+
+    plt.show()
+
+    return
+
+
+def extract_all_sequences(dset,
+                          regions=['supplemental somatosensory',
+                                   'thalamus',
+                                   'caudoputamen'],
+                          start_at_ind=0,
+                          t_pre_stim=0.1,
+                          t_post_stim=0.3,
+                          kern_fr_sd=50,
+                          zscore_thresh=2,
+                          zscore_thresh_mean=0.5,
+                          filter_zetatest=0.001,
+                          fig_sidelength_scaling=1,
+                          fig_summary_markersize=80,
+                          cmap='Set3',
+                          show_plts=False):
+
+    opto_conds = ['opto', 'no_opto']
+    corr_conds = ['corr', 'incorr']
+
+    # load ephys from all datasets
+    # -----------------
+    # general list of all regions
+    region_inds = dset.get_region_inds('supplemental somatosensory')
+
+    for ind in region_inds:
+        if ind >= start_at_ind:
+            try:
+                print('--------------')
+                _exp = ExpObj_ReportOpto(dset_obj=dset, dset_ind=ind)
+                for region in regions:
+                    for opto_cond in opto_conds:
+                        for corr_cond in corr_conds:
+                            print(f'\n\t**** {opto_cond=} | {corr_cond=} ****')
+                            try:
+                                _exp.plt_trial_reliability(
+                                    area=region,
+                                    opto_cond=opto_cond,
+                                    corr_cond=corr_cond,
+                                    t_pre_stim=t_pre_stim,
+                                    t_post_stim=t_post_stim,
+                                    kern_fr_sd=kern_fr_sd,
+                                    zscore_thresh=zscore_thresh,
+                                    zscore_thresh_mean=zscore_thresh_mean,
+                                    filter_zetatest=filter_zetatest,
+                                    fig_sidelength_scaling=fig_sidelength_scaling,
+                                    fig_summary_markersize=fig_summary_markersize,
+                                    cmap=cmap,
+                                    show_plts=show_plts)
+                            except Exception as error:
+                                print(f'\t!! could not load {opto_cond=} '
+                                      + f'| {corr_cond=} !!')
+                                print(f'\terror: {error}')
+
+            except Exception as error:
+                print('!! could not load expref ',
+                      f'{dset.npix.iloc[ind]["Exp_Ref"]}!! ')
+                print(f'error: {error}')
+                pass
+    return
+
+
+def make_sequence_summary_plts(dset_obj):
+    """
+    Generates summary plots for entire dset based on all data.
+    1. Goes through the dset, and for each exp, sees if summary csvs exists
+    2. Append results for each summary csvs to a master datatable
+    3. Make summary plots
+        A. Latency plot summary (by region, and by trial condition)
+        B. Some summary of the order plot (entropy?)
+    """
+
+    opto_conds = ['no_opto', 'opto']
+    corr_conds = ['corr', 'incorr']
+    regions = ['supplemental somatosensory',
+               'thalamus',
+               'caudoputamen']
+
+    # load csvs if present
+    # -----------------
+    # general list of all exprefs
+    region_inds = dset_obj.get_region_inds('supplemental somatosensory')
+
+    # To store data, make nested NameSpace of DataFrames
+    df = {}
+    for region in regions:
+        df[region] = SimpleNamespace()
+        for opto_cond in opto_conds:
+            setattr(df[region], opto_cond, SimpleNamespace())
+            for corr_cond in corr_conds:
+                setattr(getattr(df[region], opto_cond), corr_cond,
+                        pd.DataFrame())
+
+    for ind in region_inds:
+        print('--------------')
+        dset_obj.goto_expref(ind)
+
+        for region in regions:
+            print(f'\t{region=}')
+            for opto_cond in opto_conds:
+                for corr_cond in corr_conds:
+                    print(f'\t\t {opto_cond=} | {corr_cond=} ')
+                    try:
+                        dir_list = os.listdir('data_csv')
+                        for fname in dir_list:
+                            if fname.startswith('order_t_onset') \
+                               and region in fname and f"'{corr_cond}'" in fname \
+                               and f"'{opto_cond}'" in fname:
+                                print(f'\t\t\tconcatenating {fname}...')
+                                _csv = pd.read_csv(os.path.join('data_csv', fname))
+
+                        _df_old = getattr(getattr(
+                            df[region], opto_cond), corr_cond)
+                        _df_new = pd.concat([_df_old, _csv])
+
+                        setattr(getattr(
+                            df[region], opto_cond), corr_cond,
+                                _df_new)
+                        del _csv
+
+                    except Exception as e:
+                        print(f'\t\t\t !! Exception: {e}!! ')
+
+
+    return df
+
+
+def make_sequence_summary_plts_matchedneurs(dset_obj):
+    """
+    Generates summary plots for entire dset based on all data.
+    1. Goes through the dset, and for each exp, sees if summary csvs exists
+    2. Append results for each summary csvs to a master datatable
+    3. Make summary plots
+        A. Latency plot summary (by region, and by trial condition)
+        B. Some summary of the order plot (entropy?)
+    """
+
+    opto_conds = ['no_opto', 'opto']
+    corr_conds = ['corr', 'incorr']
+    regions = ['supplemental somatosensory',
+               'thalamus',
+               'caudoputamen']
+
+    # load csvs if present
+    # -----------------
+    # general list of all exprefs
+    region_inds = dset_obj.get_region_inds('supplemental somatosensory')
+
+    # To store data, make nested NameSpace of DataFrames
+    df = {}
+    for region in regions:
+        df[region] = SimpleNamespace()
+        for opto_cond in opto_conds:
+            setattr(df[region], opto_cond, SimpleNamespace())
+            for corr_cond in corr_conds:
+                setattr(getattr(df[region], opto_cond), corr_cond,
+                        pd.DataFrame())
+
+    for ind in region_inds:
+        print('--------------')
+        dset_obj.goto_expref(ind)
+
+        for region in regions:
+            print(f'\t{region=}')
+            for opto_cond in opto_conds:
+                print(f'\t\t {opto_cond=}')
+                try:
+                    dir_list = os.listdir('data_csv')
+                    for fname in dir_list:
+                        if fname.startswith('order_t_onset') \
+                           and region in fname and "'corr'" in fname \
+                           and f"'{opto_cond}'" in fname:
+                            print(f'\t\t\tconcatenating {fname}...')
+                            _csv_corr = pd.read_csv(os.path.join('data_csv', fname))
+                        elif fname.startswith('order_t_onset') \
+                             and region in fname and "'incorr'" in fname \
+                             and f"'{opto_cond}'" in fname:
+                            print(f'\t\t\tconcatenating {fname}...')
+                            _csv_incorr = pd.read_csv(os.path.join('data_csv', fname))
+
+                    assert '_csv_corr' in locals()
+                    assert '_csv_incorr' in locals()
+
+                    _df_corr_old = getattr(getattr(
+                        df[region], opto_cond), 'corr')
+                    _df_corr_new = pd.concat([_df_corr_old, _csv_corr]) 
+                    setattr(getattr(
+                        df[region], opto_cond), 'corr',
+                            _df_corr_new)
+
+                    _df_incorr_old = getattr(getattr(
+                        df[region], opto_cond), 'incorr')
+                    _df_incorr_new = pd.concat([_df_incorr_old, _csv_incorr])
+                    setattr(getattr(
+                        df[region], opto_cond), 'incorr',
+                            _df_incorr_new)
+
+                    del _csv_corr
+                    del _csv_incorr
+
+                except Exception as e:
+                    print(f'\t\t\t !! Exception: {e}!! ')
+
+    return df
+
+
+def summarize_sequence_times(df_new):
+    """
+    Takes inputs from make_sequence_summary_plts_matchedneurs() and generate
+    a set of summary plots of sequence times.
+    """
+    regions = ['supplemental somatosensory', 'caudoputamen', 'thalamus']
+    colors = {'supplemental somatosensory': sns.xkcd_rgb['greenish blue'],
+              'caudoputamen': sns.xkcd_rgb['powder blue'],
+              'thalamus': sns.xkcd_rgb['pinkish']}
+    figs = []
+    axs = []
+
+    figs_comp = []
+    axs_comp = []
+
+    for ind, region in enumerate(regions):
+        figs.append(plt.figure())
+        axs.append(figs[ind].add_subplot())
+        axs[ind].scatter(df_new[region].opto.corr['t_onset_mean'],
+                         df_new[region].opto.corr['t_onset_stdev'],
+                         s=20, color=colors[region])
+        axs[ind].scatter(df_new[region].opto.incorr['t_onset_mean'],
+                         df_new[region].opto.incorr['t_onset_stdev'],
+                         s=20, color=sns.xkcd_rgb['light red'])
+        axs[ind].scatter(df_new[region].no_opto.corr['t_onset_mean'],
+                         df_new[region].no_opto.corr['t_onset_stdev'],
+                         s=20, color=sns.xkcd_rgb['slate'])
+        axs[ind].axvline(0, color='k')
+        axs[ind].axhline(0, color='k')
+        axs[ind].set_xlabel('mean onset (s)')
+        axs[ind].set_ylabel('stdev onset (s)')
+
+        figs_comp.append(plt.figure())
+        axs_comp.append(figs_comp[ind].add_subplot())
+        axs_comp[ind].scatter(
+            df_new[region].opto.corr['t_onset_mean']
+            - df_new[region].opto.incorr['t_onset_mean'],
+            df_new[region].opto.corr['t_onset_stdev']
+            - df_new[region].opto.incorr['t_onset_stdev'],
+            s=20, color=colors[region])
+        axs_comp[ind].axvline(0, color='k')
+        axs_comp[ind].axhline(0, color='k')
+        axs_comp[ind].set_xlabel('mean onset (s) (hit vs miss)')
+        axs_comp[ind].set_ylabel('stdev onset (s) (hit vs miss)')
+
+        figs[ind].savefig(f'sequence_timing_{region=}.pdf')
+        figs_comp[ind].savefig(f'sequence_timing_comp_{region=}.pdf')
+
+    plt.show()
+
+    return

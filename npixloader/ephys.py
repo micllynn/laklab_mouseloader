@@ -10,6 +10,7 @@ import matplotlib.gridspec as gs
 
 from types import SimpleNamespace
 import os
+import json
 
 from .utils import parse_samp_rate_from_params, find_key_partialmatch, \
     match_region_partial, convert_spktimes_to_spktrain, \
@@ -93,7 +94,9 @@ class SpikeTrain(object):
 
 
 class EphysData(object):
-    def __init__(self, folder, aligner_obj=False, filt_clusts=True):
+    def __init__(self, folder, aligner_obj=False, filt_clusts=True,
+                 probe_file_name='probe_file.txt', multiprobe=False,
+                 no_histology=False):
         """
         Class for loading and working with neuropixel data associated with a
         behavioral dataset. (Blake's ReportOpto dataset here)
@@ -132,11 +135,21 @@ class EphysData(object):
             self.ch.ap
             self.ch.dv
         """
+        self._no_histology = no_histology
 
         self.folder = folder
         _start_dir = os.getcwd()
 
-        self.hist = LoadHist('.', ephys_folder=folder)
+        if multiprobe is False:
+            n_folders_back_herbs_dir = 1
+        if multiprobe is True:
+            n_folders_back_herbs_dir = 2
+
+        if self._no_histology is False:
+            self.hist = LoadHist('.', ephys_folder=folder,
+                                 probe_file_name=probe_file_name,
+                                 n_folders_back_herbs_dir=n_folders_back_herbs_dir)
+        os.chdir(_start_dir)
 
         print('loading ephys...')
         print('\tloading spike data and channel position data...')
@@ -185,15 +198,9 @@ class EphysData(object):
         # try to load information about histology-aligned ch locations
         print('\thistology alignment data...')
 
-        for ind_ch in range(n_ch):
-            self.ch.region[ind_ch] = self.hist.map_ch_region.ch_to_reg(ind_ch)
-
-            # self.ch.ml[ind_ch] \
-            #     = self.ch_raw.histalign_anat[_key_ch]['x']
-            # self.ch.ap[ind_ch] \
-            #     = self.ch_raw.histalign_anat[_key_ch]['y']
-            # self.ch.dv[ind_ch] \
-            #     = self.ch_raw.histalign_anat[_key_ch]['z']
+        if self._no_histology is False:
+            for ind_ch in range(n_ch):
+                self.ch.region[ind_ch] = self.hist.map_ch_region.ch_to_reg(ind_ch)
 
         # setup a dv_plt attribute that has dvs that are staggered
         self.ch.dv_plt = np.copy(self.ch.dv)
@@ -277,7 +284,10 @@ class EphysData(object):
         self.spk.info.ch = []
         self.spk.info.region_full = []
         self.spk.info.region = []
+
         self.spk.info.dv = []
+        self.spk.info.ml = []
+        self.spk.info.ap = []
 
         for ind_clust, clust_id in enumerate(_clust_list):
             print(f'\tcluster {ind_clust}...', end='\r')
@@ -296,12 +306,15 @@ class EphysData(object):
                 _region_key = match_region_partial(
                     _region_id,
                     list(self.plt.colors.keys()))
-                # _dv = self.ch.dv_plt[_ch]
 
                 self.spk.info.ch.append(_ch)
                 self.spk.info.region_full.append(_region_id)
                 self.spk.info.region.append(_region_key)
-                # self.spk.info.dv.append(_dv)
+
+                _coords = self.hist.get_clust_coords(clust_id)
+                self.spk.info.dv.append(_coords.dv)
+                self.spk.info.ap.append(_coords.ap)
+                self.spk.info.ml.append(_coords.ml)
 
             except:
                 self.spk.info.ch.append(None)
@@ -552,15 +565,18 @@ class EphysData(object):
             print(f'plotting {clust_id=}...', end='\r')
             _t_spk = self.spk_raw.times[self.spk_raw.clusters == clust_id]
             try:
-                _clust_info = self.spk_raw.clust_info[
-                    self.spk_raw.clust_info['id'] == clust_id]
-                _ch = np.array(_clust_info['ch'])[0]
-
-                _region_id = self.ch.region[_ch]
-                _region_key = match_region_partial(
-                    _region_id,
-                    list(self.plt.colors.keys()))
-                _dv = self.ch.dv_plt[_ch]
+                if self._no_histology is False:
+                    _clust_info = self.spk_raw.clust_info[
+                        self.spk_raw.clust_info['id'] == clust_id]
+                    _ch = np.array(_clust_info['ch'])[0]
+                    _region_id = self.ch.region[_ch]
+                    _region_key = match_region_partial(
+                        _region_id,
+                        list(self.plt.colors.keys()))
+                    _dv = self.ch.dv_plt[_ch]
+                elif self._no_histology is True:
+                    _region_key = 'none'
+                    _dv = clust_id
 
                 if region is None:
                     ax.scatter(_t_spk, np.ones_like(_t_spk)*_dv,
@@ -668,6 +684,586 @@ class EphysData(object):
                     if region == _area:
                         self.plt.fr[_area] /= self.plt.fr_neur_counter[_area]
                         ax_fr.plot(self.spk.train_kernconv.t, self.plt.fr[_area],
+                                   color=self.plt.colors[_area], linewidth=0.6)
+
+        ax_fr.set_ylabel('fr (Hz)')
+        ax_fr.set_xlabel('time (s)')
+        ax_raster.set_ylabel('dv (um)')
+
+        if t_range is not None:
+            ax_raster.set_xlim(t_range[0], t_range[1])
+
+        if fig_save is True:
+            fig.savefig('figs/raster_fr.pdf')
+        plt.show()
+
+        return
+
+
+class EphysData_ValuePFC(object):
+    def __init__(self, folder, aligner_obj=False, filt_clusts=True):
+        """
+        Class for loading and working with neuropixel data associated with
+        the ValuePFC behavioral dataset.
+
+        Must be already sorted using kilosort 2.5.
+
+        Parameters
+        ---------------
+        folder : str
+            Name of the ephys folder with kilosort outputs.
+        filt_clusts : bool
+            If True, only keeps clusters that were identified by kilosort as
+            'good' (ie excludes 'noise' and 'mua'.
+        samp_rate_pointproc_hz : int
+            Sampling rate for the point process spiketrain, in Hz.
+            While the real sampling rate for neuropixels probe is quite high
+            (~30k hz), this should be much lower.
+
+        Attributes added
+        --------------
+        self.spk_clusters
+        self.spk_times_raw
+        self.spk_info
+
+        self.samp_rate_hz
+
+        self.ch_raw
+            self.ch_raw.map
+            self.ch_raw.pos
+        self.ch
+            self.ch.region
+            self.ch.region_id
+            self.ch.ml
+            self.ch.ap
+            self.ch.dv
+        """
+
+        self.folder = folder
+        _start_dir = os.getcwd()
+        os.chdir(self.folder)
+
+        print('loading ephys...')
+        print('\tloading spike data and channel position data...')
+
+        # load spk data
+        self.spk = SimpleNamespace()
+        self.spk_raw = SimpleNamespace()
+        self.spk_raw.clusters = np.load('spike_clusters.npy')
+        self.spk_raw.times = np.load('spike_times.npy')
+        self.spk_raw.clust_info = pd.read_csv('cluster_info.tsv', sep='\t')
+        self.spk_raw.samp_rate_hz = parse_samp_rate_from_params('params.py')
+
+        # load channel position data
+        self.ch_raw = SimpleNamespace()
+        self.ch_raw.map = np.load('channel_map.npy')
+        self.ch_raw.pos = np.load('channel_positions.npy')
+
+        n_ch = len(self.ch_raw.pos)
+
+        self.ch = SimpleNamespace()
+        self.ch.region = np.empty(n_ch, dtype=object)
+        self.ch.region_id = np.zeros(n_ch)
+        self.ch.ml = np.zeros(n_ch)
+        self.ch.ap = np.zeros_like(self.ch.ml)
+        self.ch.dv = np.zeros_like(self.ch.ml)
+        self.ch.dv_plt = np.zeros_like(self.ch.ml)  # offset
+
+        # setup colors for different brain regions
+        self.plt = SimpleNamespace()
+        self.plt.colors = {}
+        self.plt.colors['ACA'] = '#808022'  # olive
+        self.plt.colors['AON'] = '#027BBA'  # blue
+        self.plt.colors['ILA'] = '#F9B967'  # yellow
+        self.plt.colors['MO'] = '#CDAFD4'  # lavender
+        self.plt.colors['OLF'] = '#07A339'  # green
+        self.plt.colors['ORB'] = '#E1101D'  # red
+        self.plt.colors['PL'] = '#EE760D'  # orange
+        self.plt.colors['none'] = [0.7, 0.7, 0.7]
+
+        # try to load information about histology-aligned ch locations
+        print('\tloading histology alignment data...')
+
+        try:
+            with open('Histology_alignment/channel_locations.json') as f:
+                self.ch_raw.histalign_anat = json.load(f)
+
+            for ind_ch in range(n_ch):
+                _key_ch = 'channel_' + str(ind_ch)
+                self.ch.region[ind_ch] \
+                    = self.ch_raw.histalign_anat[_key_ch]['brain_region']
+                self.ch.region_id[ind_ch] \
+                    = self.ch_raw.histalign_anat[_key_ch]['brain_region_id']
+
+                self.ch.ml[ind_ch] \
+                    = self.ch_raw.histalign_anat[_key_ch]['x']
+                self.ch.ap[ind_ch] \
+                    = self.ch_raw.histalign_anat[_key_ch]['y']
+                self.ch.dv[ind_ch] \
+                    = self.ch_raw.histalign_anat[_key_ch]['z']
+
+            # setup a dv_plt attribute that has dvs that are staggered
+            self.ch.dv_plt = np.copy(self.ch.dv)
+            self.ch.dv_plt[0:-1] += np.diff(
+                self.ch.dv_plt)/2
+
+        except FileNotFoundError:
+            print('\tHistology alignment files are not present '
+                  + 'for this recording.')
+
+        # filter data based on phy label of 'good'
+        if filt_clusts is True:
+            print('\tfiltering clusters...')
+            # find key associated with clust id
+            _key_id = find_key_partialmatch(self.spk_raw.clust_info, 'id')
+
+            # filter clusts based on quality
+            _good_clusts_pd = self.spk_raw.clust_info[
+                self.spk_raw.clust_info['group'] == 'good']
+            self.spk_raw._good_clust_ind = np.array(_good_clusts_pd[_key_id])
+            self.spk_raw._good_clust_mask = np.isin(
+                self.spk_raw.clusters, self.spk_raw._good_clust_ind)
+
+            self.spk_raw.clusters = self.spk_raw.clusters[
+                self.spk_raw._good_clust_mask]
+            self.spk_raw.times = self.spk_raw.times[
+                self.spk_raw._good_clust_mask]
+
+        # extract spiketimes and correct for sampling rate
+        print('\textracting spiketimes...')
+        self.spk_raw.times = [self.spk_raw.times[i][0]
+                              for i in range(len(self.spk_raw.times))]
+        self.spk_raw.times = np.array(self.spk_raw.times, dtype=float)
+        self.spk_raw.times /= self.spk_raw.samp_rate_hz
+
+        # align to behavior, if aligner_obj is present
+        print('\taligning ephys to behavior...')
+        if aligner_obj is False:
+            self.aligner_obj = False
+            print('\t\tno aligner_obj present.')
+        elif aligner_obj is not False:
+            self.aligner_obj = aligner_obj
+            self.spk_raw.times = self.aligner_obj.correct_ephys_data(
+                self.spk_raw.times)
+            # self.spk_raw.times = self.deploy_aligner_on_ephys_data(
+            #     self.spk_raw.times)
+            print('\t\taligned.')
+
+        # go back to original directory
+        os.chdir(_start_dir)
+
+        return
+
+    def add_pointprocess(self, samp_rate_pointproc_hz=1000):
+        """
+        Converts a list of spiketimes and cluster IDs
+        to a spktrain (timebins with the desired sampling rate), then
+        adds this point process as an attribute to the obj instance.
+
+        Parameters
+        --------------
+        samp_rate_pointproc_hz : int
+            Sampling rate for point processes conversion
+
+        Attributes added
+        ---------------
+        self.spk
+            self.spk.t
+            self.spk.pointproc
+        """
+        print('\tadding point process...')
+        _max_t = np.max(self.spk_raw.times)
+        # _n_clusts = np.max(self.spk_raw.clusters)
+        _clust_list = np.unique(self.spk_raw.clusters)
+
+        self.spk.t = np.arange(0, _max_t, 1/samp_rate_pointproc_hz)
+        # self.spk.pointproc = np.empty(_n_clusts, dtype=np.ndarray)
+        self.spk.pointproc = np.empty(len(_clust_list), dtype=np.ndarray)
+        self.spk.pointproc_mtx = np.zeros((len(_clust_list), len(self.spk.t)))
+        self.spk.raw_clust_id = _clust_list
+
+        self.spk.info = SimpleNamespace()
+
+        self.spk.info.clust_id = self.spk.raw_clust_id
+        self.spk.info.ch = []
+        self.spk.info.region_full = []
+        self.spk.info.region = []
+        self.spk.info.dv = []
+
+        for ind_clust, clust_id in enumerate(_clust_list):
+            print(f'\tcluster {ind_clust}...', end='\r')
+            self.spk.raw_clust_id[ind_clust] = clust_id
+            _inds_clust_spkraw = np.where(self.spk_raw.clusters == clust_id)
+
+            self.spk.pointproc[ind_clust] = convert_spktimes_to_spktrain(
+                self.spk_raw.times[_inds_clust_spkraw], self.spk.t,
+                method='calc')
+            self.spk.pointproc_mtx[ind_clust, :] = self.spk.pointproc[ind_clust]
+
+            # try:
+            # find key associated with clust id
+            _key_id = find_key_partialmatch(
+                self.spk_raw.clust_info, 'id')
+
+            _clust_info = self.spk_raw.clust_info[
+                self.spk_raw.clust_info[_key_id] == clust_id]
+            _ch = np.array(_clust_info['ch'])[0]
+
+            _region_id = self.ch.region[_ch]
+            _region_key = match_region_partial(
+                _region_id,
+                list(self.plt.colors.keys()))
+            _dv = self.ch.dv_plt[_ch]
+
+            self.spk.info.ch.append(_ch)
+            self.spk.info.region_full.append(_region_id)
+            self.spk.info.region.append(_region_key)
+            self.spk.info.dv.append(_dv)
+
+            # except:
+            #     self.spk.info.ch.append(None)
+            #     self.spk.info.region_full.append(None)
+            #     self.spk.info.region.append(None)
+            #     self.spk.info.dv.append(None)
+        return
+
+    def add_kern_convol(self, kern_sd=5, samp_rate_pointproc_hz=250):
+        key_gauss_stdev = str(kern_sd)+'ms'
+
+        self.add_pointprocess(samp_rate_pointproc_hz=samp_rate_pointproc_hz)
+
+        if hasattr(self.spk, 'kernconv') is False:
+            self.spk.kernconv = SimpleNamespace()
+            self.spk.kernconv.fr = {}
+            self.spk.kernconv.t = self.spk.t
+
+        self.spk.kernconv.fr[key_gauss_stdev] = np.empty_like(
+            self.spk.pointproc, dtype=np.ndarray)
+
+        print('\tconvolving with kernel...')
+        for ind_clust, clust_id in enumerate(self.spk.raw_clust_id):
+            print(f'\tcluster {ind_clust}...', end='\r')
+
+            # convolve with gaussian
+            _pointproc_gauss = smooth_spktrain(
+                self.spk.pointproc[ind_clust], self.spk.t,
+                kern_sd)
+
+            if np.max(_pointproc_gauss) != 0:
+                self.spk.kernconv.fr[key_gauss_stdev][ind_clust] \
+                    = _pointproc_gauss
+            else:
+                self.spk.kernconv.fr[key_gauss_stdev][ind_clust] \
+                    = np.zeros_like(self.spk.kernconv.t, dtype=np.int8)
+        return
+
+    def get_subset_pointproc(self, t_start=None, t_end=None, region=None):
+        """
+        Retrieves a subset of the pointprocess array from a defined
+        time window and region.
+
+        Parameters
+        ------------
+        t_start : None or float
+            Start time to extract spikes from. If None, uses full time
+        t_end : None or float
+            End time to extract spikes from. If None, uses full time.
+        region : None or str
+            Either None (extract all neurons) or str (extract neurons only
+            from that named area, found in ephysobj.spk.info.region)
+        """
+        spk = SimpleNamespace()
+
+        # parse by region
+        # ----------------
+        if region is None:
+            _inds_neur = np.arange(len(self.spk.pointproc))
+        else:
+            _inds_neur = np.where(np.array(self.spk.info.region) == region)[0]
+
+        # parse by time
+        # ----------------
+        if t_start is not None:
+            _ind_t_start = np.argmin(np.abs(self.spk.t-t_start))
+        elif t_start is None:
+            _ind_t_start = 0
+
+        if t_end is not None:
+            _ind_t_end = np.argmin(np.abs(self.spk.t-t_end))
+        elif t_end is None:
+            _ind_t_end = -1
+
+        # save in spk simplenamespace
+        # -----------
+        spk.train = self.spk.pointproc_mtx[_inds_neur,
+                                           _ind_t_start:_ind_t_end]
+        spk.t = self.spk.t[_ind_t_start:_ind_t_end]
+
+        return spk
+
+    def calc_pca(self, bin_size=100, region=None, t_range=None):
+        """
+        Parameters
+        ----------------
+        bin_size : int
+            Bin size in ms
+        region : None or list
+            Regions from which to extract units and calculate pca
+        t_range : None or list
+            Range of times from which to calculate pca in seconds
+        """
+        self.add_pointprocess(samp_rate_pointproc_hz=1/(bin_size/1000))
+
+        if type(region) == str:
+            region = [region]
+
+        if region is None:
+            _clust_count = self.spk.raw_clust_id.shape[0]
+            _clust_inds = np.arange(self.spk.pointproc.shape[0])
+        else:
+            _clust_count = 0
+            _clust_inds = []
+            for ind_clust, raw_clust_id in enumerate(self.spk.raw_clust_id):
+                try:
+                    # find key associated with clust id
+                    _key_id = find_key_partialmatch(
+                        self.spk_raw.clust_info, 'id')
+
+                    _clust_info = self.spk_raw.clust_info[
+                        self.spk_raw.clust_info[_key_id] == raw_clust_id]
+                    _ch = np.array(_clust_info['ch'])[0]
+
+                    _region_id = self.ch.region[_ch]
+                    _region_key = match_region_partial(
+                        _region_id,
+                        list(self.plt.colors.keys()))
+
+                    if _region_key in region:
+                        _clust_inds.append(ind_clust)
+                        _clust_count += 1
+
+                except IndexError:
+                    pass
+                except TypeError:
+                    pass
+
+        pointproc_matrix = np.zeros((_clust_count,
+                                     self.spk.pointproc[0].shape[0]),
+                                    dtype=int)
+
+        for ind_clust_in_matrix, ind_clust_id in enumerate(_clust_inds):
+            _t_spk = self.spk.pointproc[ind_clust_id]
+            pointproc_matrix[ind_clust_in_matrix, :] = _t_spk
+
+        # run pca
+        # ------------
+        pca = decomposition.TruncatedSVD(n_components=3)
+        if t_range is None:
+            pca.fit(pointproc_matrix.T)
+            self.pointproc_pca = pca.transform(pointproc_matrix.T)
+        else:
+            ind_t_min = np.argmin(np.abs(self.spk.t - t_range[0]))
+            ind_t_max = np.argmin(np.abs(self.spk.t - t_range[1]))
+
+            pca.fit(pointproc_matrix[ind_t_min:ind_t_max].T)
+            self.pointproc_pca = pca.transform(
+                pointproc_matrix[ind_t_min:ind_t_max].T)
+
+    def calc_synchrony_index(self, bin_size_count_spks=10,
+                             bin_size_synch_index=1000,
+                             region=None):
+
+        bin_size_spkcount_sec = bin_size_count_spks/1000
+        self.add_pointprocess(samp_rate_pointproc_hz=int(1/bin_size_spkcount_sec))
+
+        # setup subset of the pointprocess matrix corresponding to the region
+        if region is None:
+            _clust_count = self.spk.raw_clust_id.shape[0]
+            _clust_inds = np.arange(self.spk.pointproc.shape[0])
+        else:
+            _clust_count = 0
+            _clust_inds = []
+            for ind_clust, raw_clust_id in enumerate(self.spk.raw_clust_id):
+                try:
+                    # find key associated with clust id
+                    _key_id = find_key_partialmatch(
+                        self.spk_raw.clust_info, 'id')
+
+                    _clust_info = self.spk_raw.clust_info[
+                        self.spk_raw.clust_info[_key_id] == raw_clust_id]
+                    _ch = np.array(_clust_info['ch'])[0]
+
+                    _region_id = self.ch.region[_ch]
+                    _region_key = match_region_partial(
+                        _region_id,
+                        list(self.plt.colors.keys()))
+
+                    if _region_key in region:
+                        _clust_inds.append(ind_clust)
+                        _clust_count += 1
+
+                except IndexError:
+                    pass
+                except TypeError:
+                    pass
+
+        pointproc_matrix = np.zeros((_clust_count,
+                                     self.spk.pointproc[0].shape[0]),
+                                    dtype=int)
+
+        for ind_clust_in_matrix, ind_clust_id in enumerate(_clust_inds):
+            _t_spk = self.spk.pointproc[ind_clust_id]
+            pointproc_matrix[ind_clust_in_matrix, :] = _t_spk
+
+        # Compute synchrony index
+        # ----------------
+        spk_count = np.sum(pointproc_matrix, axis=0)
+        synch_scaling_factor = int(bin_size_synch_index / bin_size_count_spks)
+        n_synch = np.floor(spk_count.shape[0]
+                           / synch_scaling_factor).astype(int)
+
+        self.psi = SimpleNamespace()
+        self.psi.index = np.zeros(n_synch-1)
+        self.psi.t = np.zeros_like(self.psi.index)
+
+        for ind_synch in range(n_synch-1):
+            _ind_start = int(ind_synch*synch_scaling_factor)
+            _ind_end = int((ind_synch+1)*synch_scaling_factor)
+            _ind_mid = int((_ind_start+_ind_end)/2)
+
+            _sd = np.std(spk_count[_ind_start:_ind_end])
+            _mean = np.mean(spk_count[_ind_start:_ind_end])
+
+            self.psi.index[ind_synch] = _sd / _mean
+            self.psi.t[ind_synch] = self.spk.t[_ind_mid]
+
+    def plt_raster(self, scatter_size=2, fig_save=False,
+                   t_range=None, region=None):
+        fig = plt.figure(figsize=(6.86, 4))
+        ax = fig.add_subplot(1, 1, 1)
+
+        max_n_clusts = np.max(self.spk_raw.clusters)
+
+        for clust_id in range(max_n_clusts):
+            print(f'plotting {clust_id=}...', end='\r')
+            _t_spk = self.spk_raw.times[self.spk_raw.clusters == clust_id]
+            try:
+                _clust_info = self.spk_raw.clust_info[
+                    self.spk_raw.clust_info['id'] == clust_id]
+                _ch = np.array(_clust_info['ch'])[0]
+
+                _region_id = self.ch.region[_ch]
+                _region_key = match_region_partial(
+                    _region_id,
+                    list(self.plt.colors.keys()))
+                _dv = self.ch.dv_plt[_ch]
+
+                if region is None:
+                    ax.scatter(_t_spk, np.ones_like(_t_spk)*_dv,
+                               s=scatter_size,
+                               color=self.plt.colors[_region_key])
+                else:
+                    if region == _region_key:
+                        ax.scatter(_t_spk, np.ones_like(_t_spk)*_dv,
+                                   s=scatter_size,
+                                   color=self.plt.colors[_region_key])
+            except IndexError:
+                pass
+
+        ax.set_xlabel('time (s)')
+        ax.set_ylabel('dv (um)')
+
+        if t_range is not None:
+            ax.set_xlim(t_range[0], t_range[1])
+
+        if fig_save is True:
+            fig.savefig(f'figs/raster_{region=}_{t_range=}.pdf')
+        plt.show()
+
+        return
+
+    def plt_raster_and_fr(self, scatter_size=2, fig_save=False,
+                          t_range=None, region=None, kern_sd='5ms',
+                          plt_areas_separately=True):
+        fig = plt.figure(figsize=(6.86, 4))
+        spec = gs.GridSpec(nrows=2, ncols=1, height_ratios=[1, 0.2],
+                           figure=fig)
+        ax_raster = fig.add_subplot(spec[0, 0])
+        ax_fr = fig.add_subplot(spec[1, 0], sharex=ax_raster)
+
+        max_n_clusts = np.max(self.spk_raw.clusters)
+
+        for clust_id in range(max_n_clusts):
+            print(f'plotting {clust_id=}...', end='\r')
+            _t_spk = self.spk_raw.times[self.spk_raw.clusters == clust_id]
+            try:
+                _clust_info = self.spk_raw.clust_info[
+                    self.spk_raw.clust_info['id'] == clust_id]
+                _ch = np.array(_clust_info['ch'])[0]
+
+                _region_id = self.ch.region[_ch]
+                _region_key = match_region_partial(
+                    _region_id,
+                    list(self.plt.colors.keys()))
+                _dv = self.ch.dv_plt[_ch]
+
+                if region is None:
+                    ax_raster.scatter(_t_spk, np.ones_like(_t_spk)*_dv,
+                                      s=scatter_size,
+                                      color=self.plt.colors[_region_key])
+                else:
+                    if region == _region_key:
+                        ax_raster.scatter(_t_spk, np.ones_like(_t_spk)*_dv,
+                                          s=scatter_size,
+                                          color=self.plt.colors[_region_key])
+            except IndexError:
+                pass
+
+
+        # firing rate plot
+        # ------------
+        if plt_areas_separately is True:
+            _list_areas = list(self.plt.colors.keys())
+
+            # create struct to store region-specific firing rates
+            self.plt.fr = {}
+            self.plt.fr_neur_counter = {}
+            for _area in _list_areas:
+                self.plt.fr[_area] = np.zeros_like(self.spk.kernconv.t,
+                                                   dtype='single')
+                self.plt.fr_neur_counter[_area] = 0
+
+            for clust_id in range(max_n_clusts):
+                try:
+                    _clust_info = self.spk_raw.clust_info[
+                        self.spk_raw.clust_info['id'] == clust_id]
+                    _ch = np.array(_clust_info['ch'])[0]
+
+                    _region_id = self.ch.region[_ch]
+                    _region_key = match_region_partial(
+                        _region_id,
+                        list(self.plt.colors.keys()))
+
+                    self.plt.fr[_region_key] += self.spk.kernconv.fr[kern_sd]\
+                        [clust_id].astype(float)
+                    self.plt.fr_neur_counter[_region_key] += 1
+                except IndexError:
+                    pass
+
+            # normalize each region firing rate by number of neurons and plot
+            for _area in _list_areas:
+                if region is None:
+                    if self.plt.fr_neur_counter[_area] != 0:
+                        self.plt.fr[_area] /= self.plt.fr_neur_counter[_area]
+                    elif self.plt.fr_neur_counter[_area] == 0:
+                        pass
+
+                    ax_fr.plot(self.spk.kernconv.t, self.plt.fr[_area],
+                               color=self.plt.colors[_area], linewidth=0.6)
+                else:
+                    if region == _area:
+                        self.plt.fr[_area] /= self.plt.fr_neur_counter[_area]
+                        ax_fr.plot(self.spk.kernconv.t, self.plt.fr[_area],
                                    color=self.plt.colors[_area], linewidth=0.6)
 
         ax_fr.set_ylabel('fr (Hz)')

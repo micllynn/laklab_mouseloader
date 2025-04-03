@@ -39,10 +39,14 @@ class Aligner_EphysBeh(object):
 
         files = os.listdir(folder)
 
-        f = None
+        fname = None
         for f in files:
-            if f.endswith('XA_0_0.txt'):
+            if f.lower().endswith('xa_0_0.txt'):
                 fname = f
+
+        if fname == None:
+            raise UnboundLocalError('error in aligning ephys and beh: no rew echo'
+                  + ' file for ephys found (xa_0_0.txt)')
 
         df = pd.read_csv(folder+'/'+fname, header=None)
         self.rew_echo_ephys = np.array(df[0])

@@ -1,5 +1,6 @@
 import numpy as np
 import scipy as sp
+import os
 import scipy.signal as sp_signal
 import matplotlib.pyplot as plt
 from types import SimpleNamespace
@@ -28,6 +29,20 @@ def find_event_onsets_autothresh(events, n_stdevs=2):
         event_diff > (event_diff_mean + event_diff_std*n_stdevs))[0]
 
     return event_inds
+
+
+def remove_lick_artefact_after_rew(t_licks,
+                                   t_interval_after_rew=[0.03, 0.06]):
+    """
+    Takes a vector of lick times aligned to reward onset (t=0),
+    and removes all lick times within a certain time-window after
+    reward, in seconds (these are typically artefacts.)
+    """
+    inds_to_delete = np.argwhere(np.logical_and(
+        t_licks > t_interval_after_rew[0],
+        t_licks < t_interval_after_rew[1]))
+    t_licks_corrected = np.delete(t_licks, inds_to_delete)
+    return t_licks_corrected
 
 
 def calc_alpha(val, val_max, alpha_min=0.2):
@@ -230,3 +245,89 @@ def smooth_spktrain(spktrain, t,
         gauss_kern, mode='same')
 
     return spktrain_smoothed
+
+
+def extract_activ_order(spk_mtx, time, thresh=2):
+    """
+    Takes a matrix (spk_mtx (neur, t)) of spikes over time for a population
+    of neurons in a single trial (aligned to stim or some other event) and a
+    time vector (time), and computes the relative onset time for each neuron
+    using a threshold (thresh).
+
+    Best if spk_mtx is z-scored smoothed firing rate over time,
+    and then a threshold is applied to this.
+
+    Returns
+    -------------
+    order : SimpleNamespace()
+    order.t_onset
+        Onset time, of activity for each neuron, calculated using [time]
+        (None if no activity)
+    order.rank
+        Ordered rank of each neuron for that trial, as an integer.
+        (None if no activity)
+    """
+
+    n_neurs = spk_mtx .shape[0]
+
+    order = SimpleNamespace()
+    order.t_onset = np.zeros(n_neurs)
+    order.rank = np.zeros(n_neurs)
+
+    # Compute onset times
+    for neur in range(n_neurs):
+        # try to get the latency
+        try:
+            _ind_latency = np.where(
+                (spk_mtx[neur, :] > thresh) > 0)[0]
+            # only take times > 0
+            _ind_latency_timethresh = _ind_latency[_ind_latency > np.argwhere(
+                time > 0)[0]][0]
+
+            _t_latency = time[_ind_latency_timethresh]
+        except IndexError:
+            _ind_latency = None
+            _t_latency = None
+
+        order.t_onset[neur] = _t_latency
+
+    _rank = np.argsort(order.t_onset)
+
+    # delete all items that have a latency of nan (no activity that trial)
+    _rank = np.delete(
+        _rank,
+        np.arange(-1, -1*(np.sum(np.isnan(order.t_onset)))-1, -1))
+    order.rank = _rank
+
+    return order
+
+
+def pad_rank_with_nans(rank):
+    """
+    Takes an array of arrays denoting the activation order of each neuron for
+    each trial, and convert to a single large array padded with nans (in
+    case not every trial contains activation by all neurons
+    """
+    # find max number of neurons activated in a single trial
+    n_tr = rank.shape[0]
+    n_neurs_max = 0
+    for tr in range(n_tr):
+        _size = rank[tr].shape[0]
+        if _size > n_neurs_max:
+            n_neurs_max = _size
+
+    rank_padded = np.zeros((n_tr, n_neurs_max))
+
+    for tr in range(n_tr):
+        _n_to_pad = n_neurs_max - rank[tr].shape[0]
+        rank_padded[tr, :] = np.pad(rank[tr].astype(float),
+                                    ((0, _n_to_pad)), 'constant',
+                                    constant_values=np.nan)
+
+    return rank_padded
+
+
+def check_folder_exists(folder_name):
+    if not os.path.exists(folder_name):
+        os.mkdir(folder_name)
+    return
