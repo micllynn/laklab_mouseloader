@@ -49,9 +49,9 @@ class DSetObj(object):
             if 'darwin' in self._platform:
                 self._path_to_server = '/Volumes/Data'
             elif 'win32' in self._platform:
-                self._path_to_server = "Z:"
+                self._path_to_server = "Z:\\"
             elif 'win64' in self._platform:
-                self._path_to_server = "Z:"
+                self._path_to_server = "Z:\\"
 
         # load dataset
         print('loading dataset...')
