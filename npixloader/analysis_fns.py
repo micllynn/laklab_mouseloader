@@ -318,6 +318,8 @@ def plt_ephys_all_ordered(get_ephys_all_obj,
 
     try:
         os.chdir('/Users/michaellynn/Desktop/postdoc/projects/ReportOpto_BR_MBL')
+    except:
+        pass
 
     ephys_all_cp = copy.deepcopy(get_ephys_all_obj)
 
