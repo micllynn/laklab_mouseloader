@@ -41,6 +41,7 @@ class DecodingObj(object):
                  scaler=sklearn.preprocessing.StandardScaler,
                  scaler_kwargs={},
                  classifier_scoring='balanced_accuracy'):
+
         # Setup
         # -----------------
         n_sess_all, n_sess_all_ind = np.unique(self.ephys.n_sess.opto.corr,

@@ -21,6 +21,7 @@ class TwoPRec_New(object):
                  enclosing_folder=None,
                  folder_beh=None,
                  folder_img=None,
+                 fname_img=None,
                  dset_obj=None,
                  dset_ind=None,
                  ch_img=2,
@@ -80,9 +81,12 @@ class TwoPRec_New(object):
 
         # get filename of image of the appropriate channel
         list_img = os.listdir(self.folder.img)
-        for _fname in list_img:
-            if f'Ch{ch_img}.tif' in _fname and 'compiled' in _fname:
-                self.fname_img = _fname
+        if fname_img is None:
+            for _fname in list_img:
+                if f'Ch{ch_img}.tif' in _fname and 'compiled' in _fname:
+                    self.fname_img = _fname
+        else:
+            self.fname_img = fname_img
 
         # load behavioral data
         # -------------

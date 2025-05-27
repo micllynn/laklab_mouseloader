@@ -99,6 +99,7 @@ def get_ephys_all(dset, region='supplemental somatosensory',
 
     ephys.params = SimpleNamespace(
         region=region,
+        region_full=[],
         ref=ref,
         wheel_turn_thresh_opto_incorr=wheel_turn_thresh_opto_incorr,
         wheel_turn_thresh_dir_opto_incorr=wheel_turn_thresh_dir_opto_incorr,
