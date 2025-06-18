@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from types import SimpleNamespace
 import os
 
-from .utils import find_event_onsets, find_event_onsets_autothresh
+from .utils import find_event_onsets, remove_event_duplicates
 from .utils_twop import paq_read
 from .beh import TimelineParser
 
@@ -45,13 +45,15 @@ class Aligner_ImgBeh():
 
         _times = np.linspace(0, (1/_samp_rate)*_n_datapoints, _n_datapoints)
         _2p_frames = find_event_onsets(
-            self.paq['data'][_ind_imgstart, :], thresh=3)
+            self.paq['data'][_ind_imgstart, :], thresh=2)
         _2p_frame_times = _times[_2p_frames]
 
         # calc rew echo times and subtract frame start times
         _rew_echoes = find_event_onsets(
-            self.paq['data'][_ind_rewecho, :], thresh=3)
+            self.paq['data'][_ind_rewecho, :], thresh=2)
         _rew_echo_times = _times[_rew_echoes]
+        _rew_echo_times = remove_event_duplicates(
+            _rew_echo_times, abs_refractory_period=0.1)
         _rew_echo_times -= _2p_frame_times[0]
 
         self.rew_echo_img = _rew_echo_times

@@ -31,6 +31,16 @@ def find_event_onsets_autothresh(events, n_stdevs=2):
     return event_inds
 
 
+def remove_event_duplicates(events, abs_refractory_period=0.1):
+    events_diff = np.diff(events)
+    inds_to_cut = []
+    for ind, event_diff in enumerate(events_diff):
+        if event_diff < abs_refractory_period:
+            inds_to_cut.append(ind)
+    events_fixed = np.delete(events, inds_to_cut)
+    return events_fixed
+
+
 def remove_lick_artefact_after_rew(t_licks,
                                    t_interval_after_rew=[0.03, 0.06]):
     """
