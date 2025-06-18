@@ -86,6 +86,71 @@ def plot_antic_licking(dset_obj, figsize=(2, 2),
     return
 
 
+def plt_fig1_grab_summary(dset_obj,
+                          t_pre=1,
+                          t_post=5):
+    """
+    Plots all stimulus-evoked GRAB5-HT responses across the whole
+    dataset.
+    """
+    # load and store
+    # -----------
+    n_recs = dset_obj._dset_raw['exprefs'].shape[0]
+    tr_conds = ['0', '0.5_rew', '0.5_norew', '1']
+
+    for dset_ind in range(n_recs):
+        _exp = TwoPRec_New(dset_obj=dset_obj,
+                           dset_ind=dset_ind,
+                           ch_img=1,
+                           trial_end=dset_obj._dset_raw['trial_end'][dset_ind])
+        _exp.plt_stim_aligned_avg(t_pre=t_pre, t_post=t_post, plot=False)
+        _ind_t_stim = np.argmin(np.abs(_exp.frame_avg.t - 0))
+        _ind_t_rew = np.argmin(np.abs(_exp.frame_avg.t - 2))
+
+        # On first recording, setup data structs
+        if dset_ind == 0:
+            len_dff = _exp.frame_avg.dff['0'].shape[1]
+
+            data = SimpleNamespace
+            data.stats = SimpleNamespace(
+                stim_resp={},
+                rew_resp={},
+                rew_omission_resp={})
+
+            for tr_cond in tr_conds:
+                data.dff_stim[tr_cond] = np.zeros(n_recs, len_dff)
+                data.stats.stim_resp[tr_cond] = np.zeros(n_recs)
+                data.stats.rew_resp[tr_cond] = np.zeros(n_recs)
+                data.stats.between_sector_variance_stim[tr_cond] \
+                    = np.zeros(n_recs)
+                data.stats.within_sector_variance_stim[tr_cond] \
+                    = np.zeros(n_recs)
+
+        # for this rec, iterate through all trials and store
+        for tr_cond in tr_conds:
+            data.dff_stim[tr_cond][dset_ind, :] = np.mean(
+                _exp.frame_avg.dff[tr_cond], axis=0)
+            data.t_dff_stim = _exp.frame_avg.t
+            data.stats.stim_resp[tr_cond][dset_ind] = np.mean(np.mean(
+                _exp.frame_avg.dff[tr_cond][:, _ind_t_stim:_ind_t_rew],
+                axis=0), axis=0)
+
+    # plot data
+    # -----------
+    fig = plt.figure(figsize=(6.86, 4))
+    spec = gs.GridSpec(nrows=1, ncols=4,
+                       width_ratios=[1, 0.3, 0.3, 0.3],
+                       figure=fig)
+    ax_dff = fig.add_subplot(spec[0, 0])
+    ax_stats_stim = fig.add_subplot(spec[0, 1])
+    ax_stats_rew = fig.add_subplot(spec[0, 2])
+    ax_stats_licking = fig.add_subplot(spec[0, 3])
+
+    ax_dff.plot()
+
+    return
+
+
 def plt_grab_responses_aligned(dset_obj, dset_ind_start=0,
                                t_pre=1, t_post=6,
                                trial_end=60):
@@ -122,25 +187,6 @@ def plt_grab_responses_aligned(dset_obj, dset_ind_start=0,
                     plt_show=False)
 
     return
-
-# def plt_special_conds_from_dset(dset_obj, dset_ind_start=0):
-#     n_recs = dset_obj._dset_raw['expref'].shape[0]
-
-#     plot_conds_chs = SimpleNamespace
-#     plot_conds_chs.ch = [1, 2]
-#     plot_conds_chs.plt_dff_y_gain = [10, 6]
-
-#     plot_conds_spec = SimpleNamespace()
-#     plot_conds_spec.plot_special = ['rew', 'rew_norew',
-#                                     'prelick_noprelick',
-#                                     '']
-#     plot_conds_spec.plt_dff =
-#     for rec in range(dset_ind_start, n_recs):
-#         try:
-#             print('--------------')
-#             print(f'expref: {dset_obj.iloc[ind]["expref"]}')
-
-#     return
 
 
 def plt_rew_value_from_dset(dset_obj, dset_ind_start=0,
