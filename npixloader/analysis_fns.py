@@ -13,6 +13,7 @@ import gc
 import os
 import copy
 import pickle
+import traceback
 
 from .load_exp import ExpObj_ReportOpto
 from .utils import rescale_to_frac
@@ -62,6 +63,7 @@ def get_ephys_all(dset, region='supplemental somatosensory',
                   ref='stim',
                   t_pre=1, t_post=1,
                   kern_fr_sd=25, sampling_rate=100,
+                  get_raw_spks=False,
                   get_zscore=True,
                   filter_high_perf=None,
                   wheel_turn_thresh_opto_incorr=50,
@@ -78,7 +80,10 @@ def get_ephys_all(dset, region='supplemental somatosensory',
 
     # load ephys from all datasets
     # -----------------
+    # get indices of recordings containing this region
     region_inds = dset.get_region_inds(region)
+
+    # print(f"{region_inds=}")
 
     ephys = SimpleNamespace()
     ephys.tr = SimpleNamespace(
@@ -96,6 +101,12 @@ def get_ephys_all(dset, region='supplemental somatosensory',
     ephys.n_tr = SimpleNamespace(
         opto=SimpleNamespace(),
         no_opto=SimpleNamespace())
+    
+    ## additional attributes
+    ephys.animal_id = SimpleNamespace(
+        opto=SimpleNamespace(),
+        no_opto=SimpleNamespace())
+    ## ###
 
     ephys.params = SimpleNamespace(
         region=region,
@@ -113,14 +124,25 @@ def get_ephys_all(dset, region='supplemental somatosensory',
         no_opto=SimpleNamespace(corr=0, incorr=0))
     sess_count = 0
 
+    # print(f"{region_inds=}")
     for ind in region_inds:
+        # print(f"{start_at_ind=}")
+        print(f'{ind}/{len(region_inds)} recs...')
+        # print(f"{dset=}, {ref=}")
         if ind >= start_at_ind:
             try:
                 print('--------------')
+
+                # TODO: get animal and session IDs
+                animal_id = dset.npix.iloc[ind]["Animal"]
+                abs_rec_id = dset.npix.iloc[[0]].index[0] 
+
                 _exp = ExpObj_ReportOpto(dset_obj=dset, dset_ind=ind)
+
                 _ephys_rec = _exp.get_aligned_ephys(
                     region=[region], ref=ref,
                     t_pre=t_pre, t_post=t_post,
+                    get_raw_spks=get_raw_spks,
                     kern_fr_sd=kern_fr_sd, sampling_rate=sampling_rate,
                     get_zscore=get_zscore,
                     filter_high_perf=filter_high_perf,
@@ -149,7 +171,9 @@ def get_ephys_all(dset, region='supplemental somatosensory',
                                 # first rec special tasks
                                 # -------------
                                 if _first_rec is True:
+
                                     print('\t\tfirst rec')
+                                    
                                     # trial-averaged response in ephys.avg
                                     setattr(getattr(
                                         ephys.avg, trial_cond),
@@ -178,10 +202,22 @@ def get_ephys_all(dset, region='supplemental somatosensory',
 
                                     # record if this is first rec and
                                     # update session count
+
+                                    # ## initialise animal and session ID variables
+                                    setattr(getattr(
+                                        ephys.animal_id, trial_cond),
+                                            choice_cond,
+                                            [])
+                                    
+                                    setattr(getattr(
+                                        ephys.abs_rec_id, trial_cond),
+                                            choice_cond,
+                                            [])
+         
                                     setattr(getattr(
                                         first_rec, trial_cond),
                                             choice_cond, False)
-
+                                    
                                 # non-first rec special tasks
                                 # --------------
                                 elif _first_rec is False:
@@ -224,9 +260,20 @@ def get_ephys_all(dset, region='supplemental somatosensory',
                                         ephys.n_sess_abs, trial_cond),
                                             choice_cond)[_neur_count] \
                                             = ind
+                                    
+                                     # animal ID
+                                    getattr(getattr(
+                                        ephys.animal_id, trial_cond),
+                                            choice_cond).append(animal_id)
+                                    
+                                    setattr(getattr(
+                                            ephys.abs_rec_id, trial_cond),
+                                                choice_cond).append(abs_rec_id)
+                                                                         
                                     _neur_count += 1
                                     # print(f'\t\t\t{_neur_count=}')
 
+                                    
                                 setattr(getattr(neur_count, trial_cond),
                                         choice_cond, _neur_count)
 
@@ -296,9 +343,31 @@ def get_ephys_all_dict(dset,
 
     ephys_all_dict = {}
     for reg in region:
-        ephys_all_dict[reg] = get_ephys_all(
-            dset, region=reg, **kwargs)
+        try:
+            ephys_all_dict[reg] = get_ephys_all(
+                dset, region=reg, **kwargs)
+        except Exception as e:
+            print(f"Failed for {reg} with exception {e}:\n{traceback.print_exc()}")
+            ephys_all_dict[reg] = None
 
+    return ephys_all_dict
+
+def get_ephys_all_dict(dset,
+                       region=['supplemental somatosensory',
+                               'caudoputamen',
+                               'thalamus'],
+                       **kwargs):
+    """
+    Runs get_ephys_all, but on a list of regions.
+    """
+
+    ephys_all_dict = {}
+    for reg in region:
+        print(f"LOADING REGION: {reg}")
+        ephys_all_dict[reg] = get_ephys_all(
+                dset, region=reg, **kwargs)
+
+            
     return ephys_all_dict
 
 

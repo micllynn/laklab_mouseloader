@@ -81,6 +81,8 @@ class ExpObj_ReportOpto(object):
             self.folder.ephys = dset_obj.get_path_ephys(dset_ind)
             self.folder.beh = dset_obj.get_path_beh(dset_ind)
 
+            # print(f"{self.folder.enclosing=}, {self.folder.ephys=}, {self.folder.beh=}")
+            
             if dset_obj.npix['Dual_probe'].iloc[dset_ind] == 'Yes':
                 self._multiprobe = True
                 if dset_obj.npix['Imec'].iloc[dset_ind] == 'imec0':
@@ -100,16 +102,27 @@ class ExpObj_ReportOpto(object):
         # setup aligner objects
         print('\tcreating aligner object...')
         self.aligner_obj = Aligner_EphysBeh()
+
+        # print(f"{self.folder.ephys=}, {self.folder.beh=}")
+        
+        # print(f"CALLING parse_ephys_rewechoes()")
         self.aligner_obj.parse_ephys_rewechoes(folder=self.folder.ephys)
+        # print(f"CALLING parse_beh_rewechoes()")
         self.aligner_obj.parse_beh_rewechoes(folder=self.folder.beh)
+        # print(f"CALLING compute_alignment()")
         self.aligner_obj.compute_alignment()
 
         # setup behavior and ephys objects
+        # print(f"CREATING BEH OBJECT")
         self.beh = BehData_ReportOpto(self.folder.beh)
+        # print(f"BEH OBJ CREATED")
+        # print(f"CREATING EPHYS OBJECT")
         self.ephys = EphysData(self.folder.ephys,
                                aligner_obj=self.aligner_obj,
                                probe_file_name=self._probe_file_name,
                                multiprobe=self._multiprobe)
+        # print(f"EPHYS OBJ CREATED")
+
         self.ephys.add_spktrain_kernconv(kern_sd=5)
 
         # setup colors

@@ -146,6 +146,8 @@ class EphysData(object):
             n_folders_back_herbs_dir = 2
 
         if self._no_histology is False:
+            # print(f"CALLING LoadHist")
+            # print(f"{folder=}, {probe_file_name=}")
             self.hist = LoadHist('.', ephys_folder=folder,
                                  probe_file_name=probe_file_name,
                                  n_folders_back_herbs_dir=n_folders_back_herbs_dir)
@@ -155,6 +157,9 @@ class EphysData(object):
         print('\tloading spike data and channel position data...')
 
         os.chdir(self.folder)
+
+        # print(f"{os.getcwd()=}")
+
         # load spk data
         self.spk = SimpleNamespace()
         self.spk_raw = SimpleNamespace()
@@ -199,9 +204,12 @@ class EphysData(object):
         print('\thistology alignment data...')
 
         if self._no_histology is False:
-            for ind_ch in range(n_ch):
+            # print(f"{n_ch=}, {n_ch-1=}")
+            for ind_ch in range(n_ch-1):
+                # print(f"{ind_ch=}")
                 self.ch.region[ind_ch] = self.hist.map_ch_region.ch_to_reg(ind_ch)
-
+                # print(f"{self.ch.region[ind_ch]=}")
+        
         # setup a dv_plt attribute that has dvs that are staggered
         self.ch.dv_plt = np.copy(self.ch.dv)
         self.ch.dv_plt[0:-1] += np.diff(

@@ -2,13 +2,14 @@ import numpy as np
 import pandas as pd
 import os
 import sys
-
+import glob
 
 class DSetObj(object):
     def __init__(self,
                  path_reportopto='/Volumes/BRussell/Ephys/'
                  + 'ReportOpto_DataFrame.csv',
-                 path_to_server=None):
+                 path_to_server=None,
+                 modified_csv=False):
         """
         Creates a dataset object that stores information about all experiments
         with neuropixels recordings.
@@ -39,6 +40,8 @@ class DSetObj(object):
             Stores indices of all recordings with neuropixels, used as inputs
             to self.npix. (discontinuous indices necessitate the use of this.)
         """
+
+        self.modified_csv = modified_csv
 
         # figure out platform and server path
         self._platform = sys.platform
@@ -76,7 +79,9 @@ class DSetObj(object):
             _animal = self.npix['Animal'].iloc[ind]
             _date = self.npix['Date'].iloc[ind]
             _beh_file = self.npix['Exp_Ref'].iloc[ind].split('\\')[-1]
+
         elif ref_frame == 'all':
+
             _animal = self.npix['Animal'][ind]
             _date = self.npix['Date'][ind]
             _beh_file = self.npix['Exp_Ref'][ind].split('\\')[2]
@@ -85,10 +90,40 @@ class DSetObj(object):
         return paths
 
     def get_path_expref(self, ind):
-        prefix = self._path_to_server
-        paths = self._parse_expref(ind)
-        expref_path = os.path.join(prefix, paths[0], paths[1])
+
+        if not self.modified_csv:
+            prefix = self._path_to_server
+            paths = self._parse_expref(ind)
+            expref_path = os.path.join(prefix, paths[0], paths[1])
+
+        else:
+            prefix = self._path_to_server
+            paths = self._parse_expref(ind)
+
+            if '/' in paths[1]:
+                date_path_splt = paths[1].split('/')
+                date_path_new = f"{date_path_splt[2]}-{date_path_splt[1]}-{date_path_splt[0]}"
+                paths[1] = date_path_new
+
+            expref_path = os.path.join(prefix, paths[0], paths[1])
+
+        print(f"{expref_path=}")
         return expref_path
+    
+    # def get_path_expref(self, ind):
+
+    #     print(f"GETTING PATH EXPREF FOR {ind=}")
+    #     prefix = self._path_to_server
+    #     paths = self._parse_expref(ind)
+
+    #     if '/' in paths[1]:
+    #         date_path_splt = paths[1].split('/')
+    #         date_path_new = f"{date_path_splt[2]}-{date_path_splt[1]}-{date_path_splt[0]}"
+    #         paths[1] = date_path_new
+
+    #     expref_path = os.path.join(prefix, paths[0], paths[1])
+
+    #     return expref_path
 
     def get_path_beh(self, ind):
         "Parses the behavior folder (expref/beh_folder) for a given ind"
@@ -236,7 +271,9 @@ class DSetObj_ValuePFC(object):
 
     def get_path_expref(self, ind, prefix='/Volumes/Data'):
         paths = self._parse_expref(ind)
+
         expref_path = os.path.join(prefix, paths[0], paths[1])
+
         return expref_path
 
     def get_path_beh(self, ind):

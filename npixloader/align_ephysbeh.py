@@ -73,6 +73,7 @@ class Aligner_EphysBeh(object):
 
         """
 
+        print(f"{folder=}")
         files = os.listdir(folder)
 
         if echo_type == 'mat':

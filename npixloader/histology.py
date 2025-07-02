@@ -72,6 +72,9 @@ class ChRegionMap(object):
         _ch_count_in_reg = np.flip(self.probe['data']['region_sites'])
         _n_chs = np.sum(_ch_count_in_reg).astype(int)
 
+        # print(f"{len(_regions)=}, {len(_ch_count_in_reg)=}")
+        # print(f"{_n_chs=}")
+
         self._map = SimpleNamespace()
         self._map.chs = np.arange(_n_chs)
         self._map.regs = np.empty_like(self._map.chs, dtype=list)
@@ -84,8 +87,9 @@ class ChRegionMap(object):
         return
 
     def ch_to_reg(self, ch):
+        # print(f"{self._map.regs=}")
+        # print(f"{len(self._map.regs)=}")
         return self._map.regs[ch]
-
 
 class ChCoordMap(object):
     def __init__(self, folder='../HERBS', probe_file='probe 0.pkl'):
@@ -123,21 +127,29 @@ class LoadHist(object):
         print('loading histology...')
         os.chdir(expref)
 
+        # print(f"{expref=}")
+
         # setup HERBS directory location
         if n_folders_back_herbs_dir == 1:
             path_to_herbs_folder = '../HERBS'
         if n_folders_back_herbs_dir == 2:
             path_to_herbs_folder = '../../HERBS'
 
+        # print(f"{probe_file_name=}")
         # get probe file name
         with open(probe_file_name, 'r') as f:
             probe_file_name = str(f.read())
+
+        # print(f"{os.getcwd()=}")
+        # print(f"{probe_file_name=}")
 
         self.map_clust_ch = ClustChMap(folder=ephys_folder)
         self.map_ch_region = ChRegionMap(folder=path_to_herbs_folder,
                                          probe_file=probe_file_name)
         self.map_ch_coords = ChCoordMap(folder=path_to_herbs_folder,
                                         probe_file=probe_file_name)
+
+        # print(f"{self.map_ch_region=}")
 
     def get_clust_region(self, clust_id):
         _ch = self.map_clust_ch.clust_to_ch(clust_id)
