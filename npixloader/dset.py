@@ -107,7 +107,7 @@ class DSetObj(object):
 
             expref_path = os.path.join(prefix, paths[0], paths[1])
 
-        print(f"{expref_path=}")
+        # print(f"{expref_path=}")
         return expref_path
     
     # def get_path_expref(self, ind):
