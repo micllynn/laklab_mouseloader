@@ -16,6 +16,11 @@ from types import SimpleNamespace
 
 class DecodingObj(object):
     def __init__(self, ephys):
+        """
+        Object for running decoding analysis.
+
+        ephys must be the output from npixloader.analysis_fns.get_ephys_all().
+        """
         self.ephys = ephys
         return
 
@@ -139,7 +144,7 @@ class DecodingObj(object):
 
             # store region names
             self.neur_reg_name[ind_sess] = np.array(
-                self.ephys.region_name)[_neur_inds]
+                self.ephys.neur_info.region_name)[_neur_inds]
 
             # full decoder
             # ---------

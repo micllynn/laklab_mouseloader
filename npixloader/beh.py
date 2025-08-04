@@ -1272,3 +1272,37 @@ class BehData_ValuePFC(object):
                 tr.t.end = tr.t.start + t_period
 
         return tr
+
+
+# class TrTypeList(object):
+#     """
+#     Defines a set of trialtypes in a flexible manner, to be used during
+#     loading of behaviors in TwoPRec
+#     """
+
+#     def __init__(self, beh):
+#         self.beh = beh
+#         self.trtypes = {}
+#         return
+
+#     def add_trtype(self, trtype_name, **kwargs):
+#         self.trtypes[trtype_name] = {}
+
+#         # store all kwargs
+#         for key, val in kwargs.iteritems():
+#             self.trtypes[trtype_name][key] = val
+
+
+# class TrType(object):
+#     def __init__(self, name, rew_prob=None, rew_size=None,
+#                  rew_delivered=None,
+#                  **kwargs):
+#         self.name = name
+
+#         self.tr_def = {}
+#         for in 
+#         self.tr
+
+#         self.params = {}
+#         for key, val in kwargs.iteritems():
+#             self.params[key] = val

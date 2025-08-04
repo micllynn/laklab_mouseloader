@@ -124,7 +124,11 @@ class XMLParser(object):
             print(child.tag, child.attrib)
 
     def get_framerate(self):
-        return 1/float(self.root[2][1][3][0].attrib['value'])
+        # framerate = 1/float(self.root[2][1][3][0].attrib['value'])
+        t_frame1 = float(self.root[2][2].attrib['absoluteTime'])
+        t_frame2 = float(self.root[2][3].attrib['absoluteTime'])
+        framerate = 1 / (t_frame2 - t_frame1)
+        return framerate
 
 
 def paq_read(file_path=None, plot=False, save_path=None):

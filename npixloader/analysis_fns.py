@@ -96,6 +96,11 @@ def get_ephys_all(dset, region='supplemental somatosensory',
     ephys.n_tr = SimpleNamespace(
         opto=SimpleNamespace(),
         no_opto=SimpleNamespace())
+    ephys.neur_info = SimpleNamespace(
+        region_name=np.empty(0),
+        dv=np.empty(0),
+        ap=np.empty(0),
+        ml=np.empty(0))
 
     ephys.params = SimpleNamespace(
         region=region,
@@ -133,6 +138,21 @@ def get_ephys_all(dset, region='supplemental somatosensory',
                 # only include if there are incorrect trials
                 if _ephys_rec.opto.incorr[region] is not None:
                     print('\tincluding session...')
+
+                    # neuron info: region and ap/ml/dv
+                    ephys.neur_info.region_name = np.append(
+                        ephys.neur_info.region_name,
+                        _exp.ephys.spk.info.region_full)
+
+                    ephys.neur_info.dv = np.append(
+                        ephys.neur_info.dv,
+                        _exp.ephys.spk.info.dv)
+                    ephys.neur_info.ml = np.append(
+                        ephys.neur_info.ml,
+                        _exp.ephys.spk.info.ml)
+                    ephys.neur_info.ap = np.append(
+                        ephys.neur_info.ap,
+                        _exp.ephys.spk.info.ap)
 
                     for trial_cond in trial_conds:
                         ephys.t = getattr(_ephys_rec, trial_cond).t
@@ -202,6 +222,7 @@ def get_ephys_all(dset, region='supplemental somatosensory',
 
                                 # common tasks regardless of first rec or not
                                 # ---------------
+
                                 # tr, n_tr and n_sess
                                 for neur in range(_ephys_rec_tr_ch[region].shape[1]):
                                     # all trials in ephys.tr
