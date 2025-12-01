@@ -120,8 +120,8 @@ class VisualPavlovAnalysis(object):
 
         return
 
-    def plt(self, t_prestim=3, t_postrew=3,
-            n_trials='all', kern_sd=50):
+    def _plt_old(self, t_prestim=3, t_postrew=3,
+                 n_trials='all', kern_sd=50):
         fig = plt.figure(figsize=(4, 8))
         spec = gs.GridSpec(nrows=4, ncols=1,
                            figure=fig)
@@ -223,9 +223,9 @@ class VisualPavlovAnalysis(object):
 
         plt.show()
 
-    def plt_new(self,
-                t_prestim=3, t_postrew=3,
-                n_trials='all', kern_sd=50):
+    def plt(self,
+            t_prestim=3, t_postrew=3,
+            n_trials='all', kern_sd=50):
 
         # Numbers of trials and relative plot sizes
         # ------------
