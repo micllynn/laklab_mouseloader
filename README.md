@@ -45,3 +45,9 @@ import npixloader.analysis_fns as npl_analysis
   - `npl_analysis.plt_ephys_all_ordered(ephys_all)` plots a stimulus- or
   choice-aligned raster of the subset of ephys recordings from `get_ephys_all`.
   This can include ordering by time or by relative activity.
+  
+## Command line tools
+- `npixloader/cmd_line_tools` contains simple tools to check the daily behavioral performance of mice (classical conditioning). To use this:
+  - in `beh_check.py` replace the shebang line (`#!`) with the path of your conda environment taht nixpoader is run in
+  - run `beh_check.sh` in the shell. It takes two arguments: a path to the behavior folder, and an optional flag `-n` that specifies the presence of noise in the lick-channel (alternate algorithm to parse licks).
+  - This will automatically generate a figure of licks across each trial-type, which will be saved at the behavioral folder path as a .pdf

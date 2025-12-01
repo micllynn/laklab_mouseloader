@@ -155,12 +155,25 @@ class DSetObj(object):
                 print(f'\tdate: {expref[1]}')
                 print(f'\tn_rec: {expref[2]}\n')
 
-    def get_region_inds(self, region_str):
+    def get_region_inds(self, region):
+        """
+        region can either be a string, or a list of strings
+        (treated as logical OR).
+        """
         _inds_rec_filt = []
-        for rec in range(self.npix.shape[0]):
-            if region_str.lower() in self.npix.iloc[rec][
-                    'Probe_Region_Info'].lower():
-                _inds_rec_filt.append(rec)
+
+        if type(region) is str:
+            for rec in range(self.npix.shape[0]):
+                if region.lower() in self.npix.iloc[rec][
+                        'Probe_Region_Info'].lower():
+                    _inds_rec_filt.append(rec)
+        elif type(region) is list:
+            for rec in range(self.npix.shape[0]):
+                for ind, _region in enumerate(region):
+                    if _region.lower() in self.npix.iloc[rec][
+                            'Probe_Region_Info'].lower():
+                        _inds_rec_filt.append(rec)
+            _inds_rec_filt = np.unique(_inds_rec_filt)
         return _inds_rec_filt
 
 

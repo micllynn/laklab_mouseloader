@@ -31,6 +31,40 @@ def find_event_onsets_autothresh(events, n_stdevs=2):
     return event_inds
 
 
+def find_event_onsets_plateau(lick_sig, t,
+                              v=5,
+                              tol=0.02,
+                              t_thresh=0.05):
+    """
+    Detect event onsets in the case where lick signal is recorded
+    with lots of periodic noise (eg Dual2P).
+    Works by finding periods where the signal plateaus at or close to
+    5+-0.02 volts for greater than 50ms (defaults) and storing these.
+    """
+    dt = t[1] - t[0]
+
+    stable = np.abs(lick_sig - v) <= tol
+
+    # Find transitions
+    diff = np.diff(stable.astype(int))
+    starts = np.where(diff == 1)[0] + 1
+    ends = np.where(diff == -1)[0] + 1
+
+    # Handle edge cases (signal starts or ends in plateau)
+    if stable[0]:
+        starts = np.r_[0, starts]
+    if stable[-1]:
+        ends = np.r_[ends, len(lick_sig)]
+
+    # Compute durations and keep only long enough plateaus
+    durations = (ends - starts) * dt
+    event_inds = [start for start, end, dur in zip(starts, ends, durations)
+                  if dur >= t_thresh]
+    event_inds = np.array(event_inds)
+
+    return np.array(event_inds)
+
+
 def remove_event_duplicates(events, abs_refractory_period=0.1):
     events_diff = np.diff(events)
     inds_to_cut = []

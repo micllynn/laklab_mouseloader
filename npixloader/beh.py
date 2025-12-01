@@ -3,6 +3,7 @@ import scipy.io as sp_io
 
 from types import SimpleNamespace
 import os
+import copy
 from .utils import dtype_to_list, convert_rewvalue_into_floats, \
     find_event_onsets, find_event_onsets_autothresh, \
     smooth_squarekern, bin_signal
@@ -46,11 +47,11 @@ class BlockParser(object):
         return outputvars
 
     def get_block_var(self, var):
-        blockvar = self.blk['block'][var]
+        blockvar = copy.deepcopy(self.blk['block'][var])
         return blockvar
 
     def get_event_var(self, var):
-        eventvar = self.blk['block']['events'][()][var][()]
+        eventvar = copy.deepcopy(self.blk['block']['events'][()][var][()])
 
         if var == 'totalRewardValues':
             eventvar = convert_rewvalue_into_floats(eventvar)
@@ -58,16 +59,15 @@ class BlockParser(object):
         return eventvar
 
     def get_param_var(self, var):
-        paramvars = self.blk['block']['paramsValues'][()][var]
-        print(paramvars)
+        paramvars = copy.deepcopy(self.blk['block']['paramsValues'][()][var])
+        return paramvars
 
     def get_input_var(self, var):
-        inputvar = self.blk['block']['inputs'][()][var][()]
+        inputvar = copy.deepcopy(self.blk['block']['inputs'][()][var][()])
         return inputvar
 
     def get_output_var(self, var):
-        outputvar = self.blk['block']['outputs'][()][var][()]
-
+        outputvar = copy.deepcopy(self.blk['block']['outputs'][()][var][()])
         return outputvar
 
 
@@ -127,7 +127,7 @@ class TimelineParser(object):
         return data
 
 
-class StimParser(object):
+class StimParser_Old(object):
     def __init__(self, beh):
         """
         Takes a BehData object as input and compiles a list
@@ -173,8 +173,88 @@ class StimParser(object):
         return
 
 
+class StimParser(object):
+    def __init__(self, beh, parse_by='stimulusOrientation'):
+        """
+        Parses trial-types from a Block file.
+
+        beh is a Behavior class instance.
+
+        parse_by is a string corresponding to a named field
+        listed in beh._data.get_param_var().
+            - It is typically either 'stimulusOrientation'
+            (orientation of visual grating)
+            or 'sitmulusTypeValues' (stimulus 'type', which
+            could be either grating, square, cross, etc.)
+        """
+        self.parse_by = parse_by
+
+        # parse parameters for all trials
+        self._all_stimtypes = beh._data.get_event_var(
+            'stimulusTypeValues')
+        self._all_stimprobs = beh._data.get_event_var(
+            'rewardProbabilityValues')
+        self._all_stimsizes = beh._data.get_event_var(
+            'rewardMagnitudeValues')
+        _stim_orien_raw = beh._data.get_param_var(
+            'stimulusOrientation')
+        self._all_stimoris = np.array(
+            [_stim_orien_raw[i][0] for i in range(len(_stim_orien_raw))])
+
+        if parse_by == 'stimulusOrientation':
+            self.ori, _st_inds = np.unique(self._all_stimoris,
+                                           return_index=True)
+            self.parsed_param = self.ori
+            self._all_parsed_param = self._all_stimoris
+
+            self.prob = np.zeros_like(self.ori, dtype=float)
+            self.size = np.zeros_like(self.ori, dtype=float)
+
+            for ind, ori in enumerate(self.ori):
+                # find the first instance of this stimtype
+                _first_ind = _st_inds[ind]
+                _stimprob = self._all_stimprobs[_first_ind]
+                _stimsize = self._all_stimsizes[_first_ind]
+
+                # save the probability and reward size for this
+                self.prob[ind] = _stimprob
+                self.size[ind] = _stimsize
+
+        elif parse_by == 'stimulusTypeValues':
+            self.stimtype, _st_inds = np.unique(self._all_stimtypes,
+                                                return_index=True)
+            self.parsed_param = self.stimtype
+            self._all_parsed_param = self._all_stimtypes
+            self.prob = np.zeros_like(self.stimtype, dtype=float)
+            self.size = np.zeros_like(self.stimtype, dtype=float)
+
+            for ind, stimtype in enumerate(self.stimtype):
+                # find the first instance of this stimtype
+                _first_ind = _st_inds[ind]
+                _stimprob = self._all_stimprobs[_first_ind]
+                _stimsize = self._all_stimsizes[_first_ind]
+
+                # save the probability and reward size for this
+                self.prob[ind] = _stimprob
+                self.size[ind] = _stimsize
+
+        return
+
+    def print_summary(self):
+        """
+        Returns a simple readout of all stims.
+        """
+        print('printing a list of stims...')
+        for ind, ori in enumerate(self.ori):
+            print(f'orientation:{ori} | size:{self.size[ind]} ',
+                  f'| prob:{self.prob[ind]}')
+
+        return
+
+
 class BehDataSimpleLoad(object):
-    def __init__(self, folder, parse_stims=False):
+    def __init__(self, folder, parse_stims=True,
+                 parse_by='stimulusOrientation'):
         self.folder = folder
         print('loading behavior...')
 
@@ -206,7 +286,7 @@ class BehDataSimpleLoad(object):
         # # parse stims if available
         # # ------------
         if parse_stims is True:
-            self._stimparser = StimParser(self)
+            self._stimparser = StimParser(self, parse_by=parse_by)
 
         return
 

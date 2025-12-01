@@ -191,6 +191,10 @@ class EphysData(object):
         self.plt.colors['pallidum'] = sns.xkcd_rgb['faded blue']
         self.plt.colors['lateral geniculate'] = sns.xkcd_rgb['salmon']
         self.plt.colors['thalamus'] = sns.xkcd_rgb['pinkish']
+        self.plt.colors['ventral posteromedial nucleus of the thalamus'] \
+            = sns.xkcd_rgb['pinkish']
+        self.plt.colors['posterior complex of the thalamus'] \
+            = sns.xkcd_rgb['pinkish']
         self.plt.colors['midbrain'] = sns.xkcd_rgb['fuchsia']
         self.plt.colors['hypothalamus'] = sns.xkcd_rgb['scarlet']
         self.plt.colors['none'] = sns.xkcd_rgb['grey']

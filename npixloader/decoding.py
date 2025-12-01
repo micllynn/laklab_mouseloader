@@ -31,7 +31,6 @@ class DecodingObj(object):
                  thresh_n_neurs=80,
                  fold_validation=3,
                  n_resamples=20,
-                 hit_vs_miss=True,
                  comp='hit_miss',
                  neur_activ_fn=np.mean,
                  neur_interval=10,
