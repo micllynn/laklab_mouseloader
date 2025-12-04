@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "npixloader"
+name = "laklab-mouseloader"
 version = "0.1"
-description = "Package for loading and analyzing rodent visual behavior experiments with Neuropixels data, including histology registration, alignment tools, and RigBox Timeline/Block file parsers"
+description = "LakLab MouseLoader: Package for loading and analyzing rodent visual behavior experiments with Neuropixels data, including histology registration, alignment tools, and RigBox Timeline/Block file parsers"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
@@ -20,7 +20,9 @@ keywords = [
     "two-photon",
     "imaging",
     "histology",
-    "rigbox"
+    "rigbox",
+    "mouse",
+    "laklab"
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -55,14 +57,14 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mbfl/npixloader"
-Repository = "https://github.com/mbfl/npixloader"
+Homepage = "https://github.com/mbfl/laklab_mouseloader"
+Repository = "https://github.com/mbfl/laklab_mouseloader"
 
 [project.scripts]
-beh-check = "npixloader.cmd_line_tools.beh_check:main"
+beh-check = "laklab_mouseloader.cmd_line_tools.beh_check:main"
 
 [tool.setuptools]
-packages = ["npixloader", "npixloader.cmd_line_tools"]
+packages = ["laklab_mouseloader", "laklab_mouseloader.cmd_line_tools"]
 
 [tool.setuptools.package-data]
-npixloader = ["*.py"]
+laklab_mouseloader = ["*.py"]
