@@ -15,12 +15,44 @@ except:
 # -------------
 
 def find_event_onsets(events, thresh=5):
+    """
+    Find event onset indices by detecting large positive changes in signal.
+
+    Parameters
+    ----------
+    events : np.ndarray
+        Event signal array (e.g., voltage trace).
+    thresh : float, optional
+        Threshold for detecting onset (difference must exceed this), by default 5.
+
+    Returns
+    -------
+    event_inds : np.ndarray
+        Indices where event onsets occur.
+    """
     event_diff = np.diff(events)
     event_inds = np.where(event_diff > thresh)[0]
     return event_inds
 
 
 def find_event_onsets_autothresh(events, n_stdevs=2):
+    """
+    Find event onsets using automatic thresholding based on signal statistics.
+
+    Detects onsets by finding differences that exceed mean + n_stdevs*std.
+
+    Parameters
+    ----------
+    events : np.ndarray
+        Event signal array (e.g., voltage trace).
+    n_stdevs : float, optional
+        Number of standard deviations above mean for threshold, by default 2.
+
+    Returns
+    -------
+    event_inds : np.ndarray
+        Indices where event onsets occur.
+    """
     event_diff = np.diff(events)
     event_diff_mean = np.mean(event_diff)
     event_diff_std = np.std(event_diff)
@@ -38,8 +70,27 @@ def find_event_onsets_plateau(lick_sig, t,
     """
     Detect event onsets in the case where lick signal is recorded
     with lots of periodic noise (eg Dual2P).
+
     Works by finding periods where the signal plateaus at or close to
     5+-0.02 volts for greater than 50ms (defaults) and storing these.
+
+    Parameters
+    ----------
+    lick_sig : np.ndarray
+        Lick signal voltage trace.
+    t : np.ndarray
+        Time vector corresponding to lick_sig.
+    v : float, optional
+        Target plateau voltage value, by default 5.
+    tol : float, optional
+        Tolerance around target voltage for plateau detection, by default 0.02.
+    t_thresh : float, optional
+        Minimum duration (seconds) for a valid plateau, by default 0.05.
+
+    Returns
+    -------
+    event_inds : np.ndarray
+        Indices where plateau onsets begin.
     """
     dt = t[1] - t[0]
 
@@ -66,6 +117,21 @@ def find_event_onsets_plateau(lick_sig, t,
 
 
 def remove_event_duplicates(events, abs_refractory_period=0.1):
+    """
+    Remove duplicate events that occur within an absolute refractory period.
+
+    Parameters
+    ----------
+    events : np.ndarray
+        Array of event times.
+    abs_refractory_period : float, optional
+        Minimum time interval between valid events (seconds), by default 0.1.
+
+    Returns
+    -------
+    events_fixed : np.ndarray
+        Event times with duplicates removed.
+    """
     events_diff = np.diff(events)
     inds_to_cut = []
     for ind, event_diff in enumerate(events_diff):
@@ -78,9 +144,24 @@ def remove_event_duplicates(events, abs_refractory_period=0.1):
 def remove_lick_artefact_after_rew(t_licks,
                                    t_interval_after_rew=[0.03, 0.06]):
     """
+    Remove lick artifact events that occur shortly after reward delivery.
+
     Takes a vector of lick times aligned to reward onset (t=0),
     and removes all lick times within a certain time-window after
-    reward, in seconds (these are typically artefacts.)
+    reward, in seconds (these are typically artefacts).
+
+    Parameters
+    ----------
+    t_licks : np.ndarray
+        Lick times aligned to reward onset (t=0).
+    t_interval_after_rew : list of float, optional
+        Time interval [start, end] (seconds) after reward to remove licks,
+        by default [0.03, 0.06].
+
+    Returns
+    -------
+    t_licks_corrected : np.ndarray
+        Lick times with artifacts removed.
     """
     inds_to_delete = np.argwhere(np.logical_and(
         t_licks > t_interval_after_rew[0],
@@ -91,9 +172,25 @@ def remove_lick_artefact_after_rew(t_licks,
 
 def calc_alpha(val, val_max, alpha_min=0.2):
     """
+    Calculate a normalized transparency value for plotting.
+
     Calculates a normalized transparency value for a datapoint,
     given the max value observed and a target minimum alpha
-    (to prevent alpha from going to 0 and becoming invisible.)
+    (to prevent alpha from going to 0 and becoming invisible).
+
+    Parameters
+    ----------
+    val : float
+        Current value to calculate alpha for.
+    val_max : float
+        Maximum value in the dataset.
+    alpha_min : float, optional
+        Minimum alpha value to prevent invisibility, by default 0.2.
+
+    Returns
+    -------
+    alpha : float
+        Normalized alpha value between alpha_min and 1.0.
     """
     offset = (alpha_min*val_max) / (1-alpha_min)
     alpha = (val+offset) / (val_max+offset)
@@ -103,6 +200,24 @@ def calc_alpha(val, val_max, alpha_min=0.2):
 
 def convert_spktimes_to_spktrain(spktimes, t,
                                  method='calc'):
+    """
+    Convert spike times to a binary spike train array.
+
+    Parameters
+    ----------
+    spktimes : np.ndarray
+        Array of spike times (seconds).
+    t : np.ndarray
+        Time vector for the spike train.
+    method : str, optional
+        Method to find spike indices: 'calc' (calculate from sampling rate)
+        or 'argmin' (find closest time point), by default 'calc'.
+
+    Returns
+    -------
+    spktrain : np.ndarray
+        Binary spike train (1 at spike times, 0 elsewhere).
+    """
     spktrain = np.zeros_like(t, dtype=np.int8)
     _samp_rate_hz = 1/(t[1]-t[0])
 
@@ -118,6 +233,29 @@ def convert_spktimes_to_spktrain(spktimes, t,
 
 def bin_signal(sig, t,
                t_bin_start=-0.2, t_bin_end=1, sampling_rate=100):
+    """
+    Bin a signal into uniform time bins with specified sampling rate.
+
+    Parameters
+    ----------
+    sig : np.ndarray
+        Signal to be binned.
+    t : np.ndarray
+        Time vector corresponding to sig.
+    t_bin_start : float, optional
+        Start time for binning (seconds), by default -0.2.
+    t_bin_end : float, optional
+        End time for binning (seconds), by default 1.
+    sampling_rate : float, optional
+        Target sampling rate (Hz) for binned signal, by default 100.
+
+    Returns
+    -------
+    binned : SimpleNamespace
+        Object with attributes:
+        - t : time vector for binned signal
+        - sig : binned signal values (averaged within each bin)
+    """
     binned = SimpleNamespace()
     binned.t = np.arange(t_bin_start,
                          t_bin_end+1/1000,
@@ -176,6 +314,21 @@ def convert_rewvalue_into_floats(rewvalue):
 
 
 def find_key_partialmatch(dictionary, str_query):
+    """
+    Find a dictionary key that partially matches a query string.
+
+    Parameters
+    ----------
+    dictionary : dict
+        Dictionary to search through.
+    str_query : str
+        String to search for within dictionary keys.
+
+    Returns
+    -------
+    key : str or None
+        First key containing the query string, or None if no match found.
+    """
     for key in list(dictionary.keys()):
         if key.find(str_query) > -1:
             return key
@@ -183,6 +336,22 @@ def find_key_partialmatch(dictionary, str_query):
 
 
 def match_region_partial(region, all_regions):
+    """
+    Find a partial match of a brain region name in a list of all regions.
+
+    Parameters
+    ----------
+    region : str
+        Brain region name to search for.
+    all_regions : list of str
+        List of all possible brain region names.
+
+    Returns
+    -------
+    matched_region : str
+        First matching region name from all_regions found within the query region,
+        or 'none' if no match found.
+    """
     for reg_to_test in all_regions:
         if reg_to_test in region.lower():
             return reg_to_test
@@ -191,12 +360,25 @@ def match_region_partial(region, all_regions):
 
 def smooth_squarekern(vec, kern, mode='mean'):
     """
-    Smooth a given signal (vec) by convolving with a square kernel of
-    a given length (kern).
+    Smooth a signal by convolving with a square kernel.
 
-    Works by first creating a padded vector with a given mode (mode) and
+    Works by first creating a padded vector with a given mode and
     convolving in the 'valid' mode to avoid edge effects and return a
     smoothed vector of identical length to the input.
+
+    Parameters
+    ----------
+    vec : np.ndarray
+        Input signal vector to smooth.
+    kern : int
+        Kernel size (must be odd number).
+    mode : str, optional
+        Padding mode for np.pad (e.g., 'mean', 'edge'), by default 'mean'.
+
+    Returns
+    -------
+    vec_smooth : np.ndarray
+        Smoothed signal vector (same length as input).
     """
 
     assert np.remainder(kern, 2) == 1, 'kern must be an odd number.'
@@ -261,15 +443,22 @@ def rescale_to_frac(times, beh, n_bins):
 def smooth_spktrain(spktrain, t,
                     gauss_stdev_ms):
     """
+    Smooth a spike train by convolving with a Gaussian kernel.
+
     Parameters
     ----------
-    pointproc : np.ndarray
-        Point process of a single neuron's spiking outputs
+    spktrain : np.ndarray
+        Point process of a single neuron's spiking outputs (binary spike train).
     t : np.ndarray
-        Time vector associated with pointproc, in units of seconds
-    gauss_stdev : np.ndarray
-        Standard devation of the gaussian kernel used for convolution,
-        in units of ms
+        Time vector associated with spktrain, in units of seconds.
+    gauss_stdev_ms : float
+        Standard deviation of the gaussian kernel used for convolution,
+        in units of milliseconds.
+
+    Returns
+    -------
+    spktrain_smoothed : np.ndarray
+        Smoothed spike train (firing rate estimate).
     """
     # setup parameters
     sampling_rate_hz = 1/(t[1]-t[0])
@@ -372,6 +561,18 @@ def pad_rank_with_nans(rank):
 
 
 def check_folder_exists(folder_name):
+    """
+    Check if a folder exists and create it if it doesn't.
+
+    Parameters
+    ----------
+    folder_name : str
+        Path to the folder to check/create.
+
+    Returns
+    -------
+    None
+    """
     if not os.path.exists(folder_name):
         os.mkdir(folder_name)
     return

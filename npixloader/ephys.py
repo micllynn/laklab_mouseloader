@@ -19,6 +19,33 @@ from .histology import LoadHist
 
 
 class SpikeTrain(object):
+    """
+    Container for spike train data with analysis methods.
+
+    Parameters
+    ----------
+    arr : np.ndarray, optional
+        Spike train array (neurons x time).
+    t : np.ndarray, optional
+        Time vector for spike train.
+    spk : object, optional
+        Alternative spike object with 'train' and 't' attributes.
+    info : dict or object, optional
+        Additional metadata about the spike train.
+
+    Attributes
+    ----------
+    arr : np.ndarray
+        Spike train array.
+    t : np.ndarray
+        Time vector.
+    samp_rate : float
+        Sampling rate in Hz.
+    info : object
+        Metadata.
+    arr_shuff : np.ndarray
+        Shuffled spike trains (created by add_shuff_data).
+    """
     def __init__(self, arr=None, t=None, spk=None, info=None):
         if spk is None:
             self.arr = arr
@@ -31,12 +58,39 @@ class SpikeTrain(object):
         self.info = info
 
     def add_shuff_data(self, n=10):
+        """
+        Generate shuffled versions of spike train for statistical testing.
+
+        Parameters
+        ----------
+        n : int, optional
+            Number of shuffled spike trains to generate, by default 10.
+
+        Returns
+        -------
+        None
+            Creates self.arr_shuff attribute containing shuffled data.
+        """
         self.arr_shuff = np.ndarray(n, dtype=np.ndarray)
         for _n in range(n):
             self.arr_shuff[_n] = np.copy(self.arr)
             np.random.shuffle(self.arr_shuff[_n])
 
     def plt(self, figsize=(3.43, 2), dotsize=10):
+        """
+        Plot spike raster for all neurons in the spike train.
+
+        Parameters
+        ----------
+        figsize : tuple of float, optional
+            Figure size (width, height) in inches, by default (3.43, 2).
+        dotsize : float, optional
+            Size of spike markers, by default 10.
+
+        Returns
+        -------
+        None
+        """
         fig = plt.figure(figsize=figsize)
         ax = fig.add_subplot(1, 1, 1)
         for neur in range(self.arr.shape[0]):
@@ -54,6 +108,21 @@ class SpikeTrain(object):
 
     def calc_sync_index_dragoi(self, on_shuff=False):
         """
+        Calculate synchrony index using Dragoi method (coefficient of variation).
+
+        Computes the ratio of standard deviation to mean of population spike counts
+        across time bins. Higher values indicate more synchronous firing.
+
+        Parameters
+        ----------
+        on_shuff : bool, optional
+            If True, compute on shuffled data; if False, compute on real data,
+            by default False.
+
+        Returns
+        -------
+        sync_index : float
+            Synchrony index (SD/mean of spike count across time).
         """
         if on_shuff is False:
             spk_count = np.sum(self.arr, axis=0)
@@ -68,6 +137,25 @@ class SpikeTrain(object):
 
     def calc_sync_index_packer(self, on_shuff=False, shuff_ind=0):
         """
+        Calculate synchrony index using Packer method (pairwise correlations).
+
+        Computes pairwise Pearson correlations between all neuron pairs and
+        averages them to quantify population synchrony.
+
+        Parameters
+        ----------
+        on_shuff : bool, optional
+            If True, compute on shuffled data; if False, compute on real data,
+            by default False.
+        shuff_ind : int, optional
+            Index of shuffled dataset to use if on_shuff is True, by default 0.
+
+        Returns
+        -------
+        sync_index : SimpleNamespace
+            Object with attributes:
+            - xcorr_arr : masked array of pairwise correlations (upper triangle)
+            - mean_xcorr : mean of all pairwise correlations
         """
         sync_index = SimpleNamespace()
         sync_index.xcorr_arr = np.ma.zeros(
@@ -90,6 +178,14 @@ class SpikeTrain(object):
         return sync_index
 
     def calc_stfr(self):
+        """
+        Calculate spike-triggered firing rate.
+
+        Returns
+        -------
+        None
+            Not yet implemented.
+        """
         return
 
 
@@ -328,6 +424,24 @@ class EphysData(object):
         return
 
     def add_spktrain_kernconv(self, kern_sd=5, samp_rate_spktrain_hz=250):
+        """
+        Add kernel-convolved spike trains (smoothed firing rates).
+
+        Generates smoothed firing rates by convolving spike trains with a
+        Gaussian kernel and stores both raw and z-scored versions.
+
+        Parameters
+        ----------
+        kern_sd : float, optional
+            Standard deviation of Gaussian kernel in milliseconds, by default 5.
+        samp_rate_spktrain_hz : float, optional
+            Sampling rate for spike train in Hz, by default 250.
+
+        Returns
+        -------
+        None
+            Creates self.spk.train_kernconv attribute with firing rate estimates.
+        """
         key_gauss_stdev = str(kern_sd)+'ms'
 
         self.add_spktrain(samp_rate_spktrain_hz=samp_rate_spktrain_hz)
@@ -493,6 +607,23 @@ class EphysData(object):
     def calc_synchrony_index(self, bin_size_count_spks=10,
                              bin_size_synch_index=1000,
                              region=None):
+        """
+        Calculate population synchrony index across time.
+
+        Parameters
+        ----------
+        bin_size_count_spks : float, optional
+            Bin size for counting spikes in milliseconds, by default 10.
+        bin_size_synch_index : float, optional
+            Bin size for computing synchrony index in milliseconds, by default 1000.
+        region : str or list of str, optional
+            Brain region(s) to analyze; if None, use all neurons, by default None.
+
+        Returns
+        -------
+        None
+            Creates self.synch_index attribute with synchrony measures.
+        """
 
         bin_size_spkcount_sec = bin_size_count_spks/1000
         self.add_spktrain(samp_rate_spktrain_hz=int(1/bin_size_spkcount_sec))
@@ -560,6 +691,24 @@ class EphysData(object):
 
     def plt_raster(self, scatter_size=2, fig_save=False,
                    t_range=None, region=None):
+        """
+        Plot spike raster with neurons organized by brain region and depth.
+
+        Parameters
+        ----------
+        scatter_size : float, optional
+            Size of spike markers, by default 2.
+        fig_save : bool, optional
+            Whether to save the figure, by default False.
+        t_range : list of float, optional
+            Time range [t_min, t_max] to display, by default None (all time).
+        region : str, optional
+            Specific brain region to plot; if None, plot all regions, by default None.
+
+        Returns
+        -------
+        None
+        """
         fig = plt.figure(figsize=(6.86, 4))
         ax = fig.add_subplot(1, 1, 1)
 
@@ -609,6 +758,28 @@ class EphysData(object):
     def plt_raster_and_fr(self, scatter_size=2, fig_save=False,
                           t_range=None, region=None, kern_sd='5ms',
                           plt_areas_separately=True):
+        """
+        Plot spike raster and population firing rate together.
+
+        Parameters
+        ----------
+        scatter_size : float, optional
+            Size of spike markers, by default 2.
+        fig_save : bool, optional
+            Whether to save the figure, by default False.
+        t_range : list of float, optional
+            Time range [t_min, t_max] to display, by default None (all time).
+        region : str, optional
+            Specific brain region to plot; if None, plot all regions, by default None.
+        kern_sd : str, optional
+            Kernel standard deviation key for smoothed firing rate, by default '5ms'.
+        plt_areas_separately : bool, optional
+            Whether to plot different brain areas separately, by default True.
+
+        Returns
+        -------
+        None
+        """
         fig = plt.figure(figsize=(6.86, 4))
         spec = gs.GridSpec(nrows=2, ncols=1, height_ratios=[1, 0.2],
                            figure=fig)
@@ -1143,6 +1314,24 @@ class EphysData_ValuePFC(object):
 
     def plt_raster(self, scatter_size=2, fig_save=False,
                    t_range=None, region=None):
+        """
+        Plot spike raster with neurons organized by brain region and depth.
+
+        Parameters
+        ----------
+        scatter_size : float, optional
+            Size of spike markers, by default 2.
+        fig_save : bool, optional
+            Whether to save the figure, by default False.
+        t_range : list of float, optional
+            Time range [t_min, t_max] to display, by default None (all time).
+        region : str, optional
+            Specific brain region to plot; if None, plot all regions, by default None.
+
+        Returns
+        -------
+        None
+        """
         fig = plt.figure(figsize=(6.86, 4))
         ax = fig.add_subplot(1, 1, 1)
 
@@ -1189,6 +1378,28 @@ class EphysData_ValuePFC(object):
     def plt_raster_and_fr(self, scatter_size=2, fig_save=False,
                           t_range=None, region=None, kern_sd='5ms',
                           plt_areas_separately=True):
+        """
+        Plot spike raster and population firing rate together.
+
+        Parameters
+        ----------
+        scatter_size : float, optional
+            Size of spike markers, by default 2.
+        fig_save : bool, optional
+            Whether to save the figure, by default False.
+        t_range : list of float, optional
+            Time range [t_min, t_max] to display, by default None (all time).
+        region : str, optional
+            Specific brain region to plot; if None, plot all regions, by default None.
+        kern_sd : str, optional
+            Kernel standard deviation key for smoothed firing rate, by default '5ms'.
+        plt_areas_separately : bool, optional
+            Whether to plot different brain areas separately, by default True.
+
+        Returns
+        -------
+        None
+        """
         fig = plt.figure(figsize=(6.86, 4))
         spec = gs.GridSpec(nrows=2, ncols=1, height_ratios=[1, 0.2],
                            figure=fig)

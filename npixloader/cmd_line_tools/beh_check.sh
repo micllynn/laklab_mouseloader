@@ -1,11 +1,13 @@
 #!/bin/bash
-# run python script
+# run python script to check behavioral data
+# This script will use the Python from your currently activated conda environment
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FNAME=$1
 FLAG=${2:-}
 
 if [[ "$FLAG" == '-n' ]]; then
-    ./beh_check.py "$FNAME" -n
+    python3 "$SCRIPT_DIR/beh_check.py" "$FNAME" -n
 else
-    ./beh_check.py "$FNAME"
+    python3 "$SCRIPT_DIR/beh_check.py" "$FNAME"
 fi

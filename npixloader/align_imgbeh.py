@@ -24,7 +24,19 @@ class Aligner_ImgBeh():
 
     def parse_img_rewechoes(self, folder='1', echo_type='paq'):
         """
-        Parses reward echoes from imaging data (.paq file)
+        Parse reward echoes from imaging data (.paq file).
+
+        Parameters
+        ----------
+        folder : str, optional
+            Folder containing the .paq file, by default '1'.
+        echo_type : str, optional
+            Type of echo file (currently only 'paq' is supported), by default 'paq'.
+
+        Returns
+        -------
+        None
+            Creates self.rew_echo_img and self.paq attributes.
         """
         # extract paq file
 
@@ -62,20 +74,24 @@ class Aligner_ImgBeh():
         """
         Get and parse reward echoes for behavior data.
 
-        behavior reward echoes are either in the .npy format or in
+        Behavior reward echoes are either in the .npy format or in
         the Timeline.mat format.
 
         Rewriting of getEventTimes.m.
 
         Parameters
-        ---------------------
-        fname : string
-            Name of the file
-        echo_type : string
+        ----------
+        folder : str, optional
+            Folder containing the reward echo file, by default '1'.
+        echo_type : str, optional
             Either 'npy' or 'mat'.
             Use 'npy' if the filename is 'reward_echo.raw.npy'
-            and 'mat' if the filename is 'xxx_Timeline.mat'.
+            and 'mat' if the filename is 'xxx_Timeline.mat', by default 'mat'.
 
+        Returns
+        -------
+        None
+            Creates self.rew_echo_beh attribute with reward echo times.
         """
 
         files = os.listdir(folder)
@@ -101,9 +117,16 @@ class Aligner_ImgBeh():
 
     def compute_alignment(self):
         """
-        Computes alignment between behavior and ephys data reward echoes.
+        Compute alignment between behavior and imaging data reward echoes.
+
         Performs linear regression and computes coefficients (slope and
-        intercept) that can be used to correct either ephys or behavior data.
+        intercept) that can be used to correct either imaging or behavior data.
+
+        Returns
+        -------
+        None
+            Creates self.coeffs attribute with alignment coefficients
+            (slope and intercept) and self.reg_results with regression statistics.
         """
         # assert len(self.rew_echo_beh) == len(self.rew_echo_ephys), \
         #     'Size of behavior and ephys reward echos must match.'

@@ -40,6 +40,19 @@ class ClustChMap(object):
         return
 
     def _get_ch_with_min_euclid_dist(self, pos_clust_xy):
+        """
+        Find the channel with minimum Euclidean distance to a cluster position.
+
+        Parameters
+        ----------
+        pos_clust_xy : array-like
+            2D position coordinates [x, y] of the cluster.
+
+        Returns
+        -------
+        _ch : int
+            Channel number with minimum Euclidean distance to the cluster position.
+        """
         _subtr = np.abs(self.ch_pos - pos_clust_xy)
         _euclid_dist = np.sqrt(_subtr[:, 0]**2 + _subtr[:, 1]**2)
         _ind_min_dist = np.argmin(_euclid_dist)
@@ -84,6 +97,19 @@ class ChRegionMap(object):
         return
 
     def ch_to_reg(self, ch):
+        """
+        Map channel number to brain region.
+
+        Parameters
+        ----------
+        ch : int
+            Channel number.
+
+        Returns
+        -------
+        region : str
+            Brain region label corresponding to the channel.
+        """
         return self._map.regs[ch]
 
 
@@ -113,10 +139,49 @@ class ChCoordMap(object):
         self._coords = self._coords * 10
 
     def ch_to_coords(self, ch):
+        """
+        Map channel number to stereotaxic coordinates.
+
+        Parameters
+        ----------
+        ch : int
+            Channel number.
+
+        Returns
+        -------
+        coords : np.ndarray
+            1D array of [ML, AP, DV] coordinates in micrometers.
+        """
         return self._coords[ch, :]
 
 
 class LoadHist(object):
+    """
+    Load and manage histological mapping data for Neuropixels recordings.
+
+    Provides a unified interface to map cluster IDs to brain regions and
+    stereotaxic coordinates using HERBS probe data and Kilosort outputs.
+
+    Parameters
+    ----------
+    expref : str
+        Path to experiment reference directory.
+    ephys_folder : str, optional
+        Name of ephys data folder, by default 'ephys_g0'.
+    probe_file_name : str, optional
+        Name of file containing probe filename reference, by default 'probe_file.txt'.
+    n_folders_back_herbs_dir : int, optional
+        Number of directory levels up to HERBS folder (1 or 2), by default 1.
+
+    Attributes
+    ----------
+    map_clust_ch : ClustChMap
+        Mapping from cluster IDs to channel numbers.
+    map_ch_region : ChRegionMap
+        Mapping from channel numbers to brain regions.
+    map_ch_coords : ChCoordMap
+        Mapping from channel numbers to stereotaxic coordinates.
+    """
     def __init__(self, expref, ephys_folder='ephys_g0',
                  probe_file_name='probe_file.txt',
                  n_folders_back_herbs_dir=1):
@@ -140,11 +205,40 @@ class LoadHist(object):
                                         probe_file=probe_file_name)
 
     def get_clust_region(self, clust_id):
+        """
+        Get the brain region for a given cluster ID.
+
+        Parameters
+        ----------
+        clust_id : int
+            Cluster ID from spike sorting.
+
+        Returns
+        -------
+        region : str
+            Brain region label where the cluster is located.
+        """
         _ch = self.map_clust_ch.clust_to_ch(clust_id)
         _reg = self.map_ch_region.ch_to_reg(_ch)
         return _reg
 
     def get_clust_coords(self, clust_id):
+        """
+        Get stereotaxic coordinates for a given cluster ID.
+
+        Parameters
+        ----------
+        clust_id : int
+            Cluster ID from spike sorting.
+
+        Returns
+        -------
+        coord : SimpleNamespace
+            Object with attributes:
+            - ml : float, mediolateral coordinate (micrometers)
+            - ap : float, anteroposterior coordinate (micrometers)
+            - dv : float, dorsoventral coordinate (micrometers)
+        """
         _ch = self.map_clust_ch.clust_to_ch(clust_id)
         _coords_raw = self.map_ch_coords.ch_to_coords(_ch)
 

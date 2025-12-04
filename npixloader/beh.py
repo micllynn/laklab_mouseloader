@@ -27,30 +27,97 @@ class BlockParser(object):
         self.aligner_obj = False  # placeholder for aligner object if present
 
     def list_block_vars(self):
+        """
+        List all available block-level variables.
+
+        Returns
+        -------
+        blockvars : list of str
+            Names of all block-level variables.
+        """
         blockvars = dtype_to_list(self.blk['block'].dtype)
         return blockvars
 
     def list_event_vars(self):
+        """
+        List all available event variables.
+
+        Returns
+        -------
+        eventvars : list of str
+            Names of all event variables.
+        """
         eventvars = dtype_to_list(self.blk['block']['events'][()].dtype)
         return eventvars
 
     def list_param_vars(self):
+        """
+        List all available parameter variables.
+
+        Returns
+        -------
+        paramvars : list of str
+            Names of all parameter variables.
+        """
         paramvars = dtype_to_list(self.blk['block']['paramsValues'][()].dtype)
         return paramvars
 
     def list_input_vars(self):
+        """
+        List all available input variables.
+
+        Returns
+        -------
+        inputvars : list of str
+            Names of all input variables.
+        """
         inputvars = dtype_to_list(self.blk['block']['inputs'][()].dtype)
         return inputvars
 
     def list_output_vars(self):
+        """
+        List all available output variables.
+
+        Returns
+        -------
+        outputvars : list of str
+            Names of all output variables.
+        """
         outputvars = dtype_to_list(self.blk['block']['outputs'][()].dtype)
         return outputvars
 
     def get_block_var(self, var):
+        """
+        Get a specific block-level variable.
+
+        Parameters
+        ----------
+        var : str
+            Name of the block variable to retrieve.
+
+        Returns
+        -------
+        blockvar : array-like
+            Deep copy of the requested block variable.
+        """
         blockvar = copy.deepcopy(self.blk['block'][var])
         return blockvar
 
     def get_event_var(self, var):
+        """
+        Get a specific event variable.
+
+        Parameters
+        ----------
+        var : str
+            Name of the event variable to retrieve.
+
+        Returns
+        -------
+        eventvar : array-like
+            Deep copy of the requested event variable. If var is 'totalRewardValues',
+            automatically converts to float format.
+        """
         eventvar = copy.deepcopy(self.blk['block']['events'][()][var][()])
 
         if var == 'totalRewardValues':
@@ -59,14 +126,53 @@ class BlockParser(object):
         return eventvar
 
     def get_param_var(self, var):
+        """
+        Get a specific parameter variable.
+
+        Parameters
+        ----------
+        var : str
+            Name of the parameter variable to retrieve.
+
+        Returns
+        -------
+        paramvars : array-like
+            Deep copy of the requested parameter variable.
+        """
         paramvars = copy.deepcopy(self.blk['block']['paramsValues'][()][var])
         return paramvars
 
     def get_input_var(self, var):
+        """
+        Get a specific input variable.
+
+        Parameters
+        ----------
+        var : str
+            Name of the input variable to retrieve.
+
+        Returns
+        -------
+        inputvar : array-like
+            Deep copy of the requested input variable.
+        """
         inputvar = copy.deepcopy(self.blk['block']['inputs'][()][var][()])
         return inputvar
 
     def get_output_var(self, var):
+        """
+        Get a specific output variable.
+
+        Parameters
+        ----------
+        var : str
+            Name of the output variable to retrieve.
+
+        Returns
+        -------
+        outputvar : array-like
+            Deep copy of the requested output variable.
+        """
         outputvar = copy.deepcopy(self.blk['block']['outputs'][()][var][()])
         return outputvar
 
@@ -88,27 +194,84 @@ class TimelineParser(object):
         self.tl = sp_io.loadmat(fname, squeeze_me=True)
 
     def list_hw_params(self):
+        """
+        List and print all hardware parameters.
+
+        Returns
+        -------
+        None
+            Prints hardware parameter names.
+        """
         hwparams = dtype_to_list(self.tl['Timeline'][()]['hw'].dtype)
         print(hwparams)
 
     def list_hw_inputs_raw(self):
+        """
+        List and print raw hardware input variables.
+
+        Returns
+        -------
+        None
+            Prints raw hardware input variables.
+        """
         inputvars = self.tl['Timeline'][()]['hw']['inputs'][()]
         print(inputvars)
 
     def list_hw_input_params(self):
+        """
+        List and print hardware input parameter names.
+
+        Returns
+        -------
+        None
+            Prints hardware input parameter names.
+        """
         input_params = dtype_to_list(
             self.tl['Timeline'][()]['hw']['inputs'][()].dtype)
         print(input_params)
 
     def get_hw_input_param(self, param):
+        """
+        Get a specific hardware input parameter.
+
+        Parameters
+        ----------
+        param : str
+            Name of the hardware input parameter to retrieve.
+
+        Returns
+        -------
+        input_param : array-like
+            Requested hardware input parameter.
+        """
         input_param = self.tl['Timeline'][()]['hw']['inputs'][()][param]
         return input_param
 
     def get_daq_samplerate(self):
+        """
+        Get DAQ sampling rate.
+
+        Returns
+        -------
+        f : float
+            DAQ sampling rate in Hz.
+        """
         f = self.tl['Timeline'][()]['hw']['daqSampleRate'][()]
         return f
 
     def get_daq_data(self):
+        """
+        Get DAQ data with time vector and signal names.
+
+        Returns
+        -------
+        data : SimpleNamespace
+            Object with attributes:
+            - t : time vector
+            - keys : list of signal names
+            - sig : dict of signals indexed by name
+            - _sig_raw : raw DAQ data matrix
+        """
         data = SimpleNamespace()
         data._sig_raw = self.tl['Timeline'][()]['rawDAQData'][()]
 
@@ -163,7 +326,12 @@ class StimParser_Old(object):
 
     def print_summary(self):
         """
-        Returns a simple readout of all stims.
+        Print a summary of all stimulus presentations.
+
+        Returns
+        -------
+        None
+            Prints stimulus information to console.
         """
         print('printing a list of stims...')
         for ind, stimtype in enumerate(self.id):
@@ -178,30 +346,42 @@ class StimParser(object):
         """
         Parses trial-types from a Block file.
 
-        beh is a Behavior class instance.
+        Parameters
+        ----------
+        beh : Behavior class instance
+            Behavior data object containing Block file data.
+        parse_by : str or None, optional
+            Method for parsing trial types. Options:
+            - 'stimulusOrientation': Parse by orientation of visual grating
+            - 'stimulusTypeValues': Parse by stimulus type (grating, square, etc.)
+            - Any other string: Generic parameter name from beh._data.get_param_var()
+            - None: Combine all trials into one type, averaging fields
+            Default is 'stimulusOrientation'.
 
-        parse_by is a string corresponding to a named field
-        listed in beh._data.get_param_var().
-            - It is typically either 'stimulusOrientation'
-            (orientation of visual grating)
-            or 'sitmulusTypeValues' (stimulus 'type', which
-            could be either grating, square, cross, etc.)
+        Notes
+        -----
+        When parse_by is a generic string, it calls beh._data.get_param_var(parse_by)
+        and stores the result as self._all_parsed_param.
+
+        When parse_by is None, all trials are combined into a single condition
+        with averaged probability and size values.
         """
         self.parse_by = parse_by
 
         # parse parameters for all trials
-        self._all_stimtypes = beh._data.get_event_var(
-            'stimulusTypeValues')
         self._all_stimprobs = beh._data.get_event_var(
             'rewardProbabilityValues')
         self._all_stimsizes = beh._data.get_event_var(
             'rewardMagnitudeValues')
-        _stim_orien_raw = beh._data.get_param_var(
-            'stimulusOrientation')
-        self._all_stimoris = np.array(
-            [_stim_orien_raw[i][0] for i in range(len(_stim_orien_raw))])
 
         if parse_by == 'stimulusOrientation':
+            # parse orientation
+            _stim_orien_raw = beh._data.get_param_var(
+                'stimulusOrientation')
+            self._all_stimoris = np.array(
+                [_stim_orien_raw[i][0] for i in range(len(_stim_orien_raw))])
+
+            # fill in stats for each trial type
             self.ori, _st_inds = np.unique(self._all_stimoris,
                                            return_index=True)
             self.parsed_param = self.ori
@@ -221,6 +401,11 @@ class StimParser(object):
                 self.size[ind] = _stimsize
 
         elif parse_by == 'stimulusTypeValues':
+            # parse orientation
+            self._all_stimtypes = beh._data.get_event_var(
+                'stimulusTypeValues')
+
+            # fill in stats for each trial type
             self.stimtype, _st_inds = np.unique(self._all_stimtypes,
                                                 return_index=True)
             self.parsed_param = self.stimtype
@@ -238,11 +423,63 @@ class StimParser(object):
                 self.prob[ind] = _stimprob
                 self.size[ind] = _stimsize
 
+        elif parse_by is None:
+            # Combine all trials into one type, averaging fields
+            self.parsed_param = np.array([0])  # Single condition ID
+            n_trials = len(self._all_stimprobs)
+            self._all_parsed_param = np.zeros(n_trials)  # All trials same type
+
+            # Average probability and size across all trials
+            self.prob = np.array([np.mean(self._all_stimprobs)])
+            self.size = np.array([np.mean(self._all_stimsizes)])
+
+            # Set ori to average for compatibility
+            self.ori = np.array([np.mean(self._all_stimoris)])
+            self.stimtype = np.array([0])
+
+        elif type(parse_by) == str:
+            # Generic string parameter - get from param_var
+            _param_raw = beh._data.get_param_var(parse_by)
+
+            # Handle different formats (single values vs arrays)
+            if len(_param_raw) > 0 and hasattr(_param_raw[0], '__len__'):
+                # Array format (like stimulusOrientation)
+                self._all_parsed_param = np.array(
+                    [_param_raw[i][0] for i in range(len(_param_raw))])
+            else:
+                # Single value format
+                self._all_parsed_param = np.array(_param_raw)
+
+            self.parsed_param, _st_inds = np.unique(self._all_parsed_param,
+                                                    return_index=True)
+
+            self.prob = np.zeros_like(self.parsed_param, dtype=float)
+            self.size = np.zeros_like(self.parsed_param, dtype=float)
+
+            for ind, param_val in enumerate(self.parsed_param):
+                # find the first instance of this parameter value
+                _first_ind = _st_inds[ind]
+                _stimprob = self._all_stimprobs[_first_ind]
+                _stimsize = self._all_stimsizes[_first_ind]
+
+                # save the probability and reward size for this
+                self.prob[ind] = _stimprob
+                self.size[ind] = _stimsize
+
+            # Store ori and stimtype for compatibility
+            self.ori = self.parsed_param
+            self.stimtype = self.parsed_param
+
         return
 
     def print_summary(self):
         """
-        Returns a simple readout of all stims.
+        Print a summary of all stimulus presentations.
+
+        Returns
+        -------
+        None
+            Prints stimulus information to console.
         """
         print('printing a list of stims...')
         for ind, ori in enumerate(self.ori):

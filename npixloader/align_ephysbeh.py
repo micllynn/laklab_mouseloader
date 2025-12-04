@@ -31,10 +31,15 @@ class Aligner_EphysBeh(object):
         Rewriting of getRewardEcho.m
 
         Parameters
-        ---------------------
-        folder : string
+        ----------
+        folder : str, optional
             Folder where the file is located
-            (file should be named *XA_0_0.txt)
+            (file should be named *XA_0_0.txt), by default 'ephys_g0'.
+
+        Returns
+        -------
+        None
+            Creates self.ephys.rew_echo attribute with reward echo times.
         """
 
         files = os.listdir(folder)
@@ -57,20 +62,24 @@ class Aligner_EphysBeh(object):
         """
         Get and parse reward echoes for behavior data.
 
-        behavior reward echoes are either in the .npy format or in
+        Behavior reward echoes are either in the .npy format or in
         the Timeline.mat format.
 
         Rewriting of getEventTimes.m.
 
         Parameters
-        ---------------------
-        fname : string
-            Name of the file
-        echo_type : string
+        ----------
+        folder : str, optional
+            Folder containing the reward echo file, by default '1'.
+        echo_type : str, optional
             Either 'npy' or 'mat'.
             Use 'npy' if the filename is 'reward_echo.raw.npy'
-            and 'mat' if the filename is 'xxx_Timeline.mat'.
+            and 'mat' if the filename is 'xxx_Timeline.mat', by default 'mat'.
 
+        Returns
+        -------
+        None
+            Creates self.rew_echo_beh attribute with reward echo times.
         """
 
         files = os.listdir(folder)
@@ -96,9 +105,16 @@ class Aligner_EphysBeh(object):
 
     def compute_alignment(self):
         """
-        Computes alignment between behavior and ephys data reward echoes.
+        Compute alignment between behavior and ephys data reward echoes.
+
         Performs linear regression and computes coefficients (slope and
         intercept) that can be used to correct either ephys or behavior data.
+
+        Returns
+        -------
+        None
+            Creates self.coeffs attribute with alignment coefficients
+            (slope and intercept) and self.reg_results with regression statistics.
         """
         # assert len(self.rew_echo_beh) == len(self.rew_echo_ephys), \
         #     'Size of behavior and ephys reward echos must match.'

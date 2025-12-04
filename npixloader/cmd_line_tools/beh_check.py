@@ -1,4 +1,4 @@
-#!/opt/homebrew/Caskroom/miniforge/base/envs/lak_npix/bin/python3
+#!/usr/bin/env python3
 """
 Python script to generate a learning figure from a
 Pavlovian behavioral experiment in mice

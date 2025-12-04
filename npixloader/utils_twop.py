@@ -9,6 +9,27 @@ import xml.etree.ElementTree as ElementTree
 
 def stitch_tiffs_memmap(directory, chan=0,
                         delete_after=False):
+    """
+    Stitch multiple TIFF files into a single compiled TIFF using memory mapping.
+
+    Memory-efficient method for concatenating large TIFF files by using memmap
+    to avoid loading entire files into memory.
+
+    Parameters
+    ----------
+    directory : str
+        Path to directory containing TIFF files starting with 'file' prefix.
+    chan : int, optional
+        Channel number for output filename, by default 0.
+    delete_after : bool, optional
+        Whether to delete original files after stitching (not implemented),
+        by default False.
+
+    Returns
+    -------
+    None
+        Creates compiled_Ch{chan}.tif in the specified directory.
+    """
     file_list_raw = os.listdir(directory)
     file_list = []
 
@@ -34,6 +55,27 @@ def stitch_tiffs_memmap(directory, chan=0,
 
 def stitch_tiffs(directory, chan=0,
                  delete_after=False):
+    """
+    Stitch multiple TIFF files by loading into memory and concatenating.
+
+    Loads all TIFF files into memory and concatenates them. Less memory-efficient
+    than stitch_tiffs_memmap but simpler implementation.
+
+    Parameters
+    ----------
+    directory : str
+        Path to directory containing TIFF files (non-hidden files ending in .tif).
+    chan : int, optional
+        Channel number for output filename, by default 0.
+    delete_after : bool, optional
+        Whether to delete original files after stitching (not implemented),
+        by default False.
+
+    Returns
+    -------
+    None
+        Creates compiled_Ch{chan}.tif in the specified directory.
+    """
     os.chdir(directory)
     file_list_raw = os.listdir(directory)
     file_list = []
@@ -88,6 +130,21 @@ def stitch_and_move_all_tiffs(directory):
 
 
 def remove_frames_from_tiff_start(tiff_path, n_frames=500):
+    """
+    Remove a specified number of frames from the beginning of a TIFF file.
+
+    Parameters
+    ----------
+    tiff_path : str
+        Path to the input TIFF file.
+    n_frames : int, optional
+        Number of frames to remove from the start, by default 500.
+
+    Returns
+    -------
+    None
+        Creates a new TIFF file with prefix 'rmframes_' in the same directory.
+    """
     path_parts = os.path.split(tiff_path)
     os.chdir(path_parts[0])
     new_tiff_name = 'rmframes_' + path_parts[1]
@@ -102,12 +159,36 @@ def remove_frames_from_tiff_start(tiff_path, n_frames=500):
 
 
 def calc_dff(trace, baseline_frames):
+    """
+    Calculate delta F over F (dF/F) for fluorescence trace.
+
+    Parameters
+    ----------
+    trace : np.ndarray
+        Fluorescence trace over time.
+    baseline_frames : int
+        Number of initial frames to use for baseline calculation.
+
+    Returns
+    -------
+    dff : np.ndarray
+        Delta F over F normalized fluorescence trace.
+    """
     f0 = np.mean(trace[0:baseline_frames])
     dff = (trace-f0)/f0
     return dff
 
 
 def clearmem():
+    """
+    Clear matplotlib figures and force garbage collection.
+
+    Closes all matplotlib figures and runs garbage collection to free memory.
+
+    Returns
+    -------
+    None
+    """
     plt.close('all')
     plt.clf()
     gc.collect()
@@ -115,15 +196,45 @@ def clearmem():
 
 
 class XMLParser(object):
+    """
+    Parse XML backup files from two-photon imaging systems.
+
+    Parameters
+    ----------
+    path_to_backup_xml : str
+        Path to the XML backup file from imaging session.
+
+    Attributes
+    ----------
+    tree : ElementTree
+        Parsed XML tree.
+    root : Element
+        Root element of the XML tree.
+    """
     def __init__(self, path_to_backup_xml):
         self.tree = ElementTree.parse(path_to_backup_xml)
         self.root = self.tree.getroot()
 
     def print_children(self):
+        """
+        Print all child elements and their attributes from XML root.
+
+        Returns
+        -------
+        None
+        """
         for child in self.root:
             print(child.tag, child.attrib)
 
     def get_framerate(self):
+        """
+        Extract framerate from XML file based on frame timestamps.
+
+        Returns
+        -------
+        framerate : float
+            Imaging framerate in Hz.
+        """
         # framerate = 1/float(self.root[2][1][3][0].attrib['value'])
         t_frame1 = float(self.root[2][2].attrib['absoluteTime'])
         t_frame2 = float(self.root[2][3].attrib['absoluteTime'])
