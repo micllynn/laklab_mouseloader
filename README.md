@@ -1,13 +1,13 @@
-This package loads rodent visual behavior experiments with associated neuropixels
-data, including visualization and analysis tools.
+This package is designed to load complex rodent visual behavior experiments
+(typically collected with RigBox) as well as simultaneous neural recordings
+(Neuropixels or two-photon, 2p).
 
-The package also includes tools to automatically register neuropixels data
-with histology, to align behavior and electrophysiological data based on shared
-TTL signals, to parse outputs from RigBox Timeline and Block files in
-a Pythonic manner, and to perform high-level analysis of the resulting outputs.
+It includes tools to align behavior with both 2p and npix recordings,
+perform analysis on both behavior and recording, and visualize
+the results (ranging from simple daily behavioral checkers to more
+sophisticated dimensionality-reduction visualizations)
 
-[The focus now is on loading Blake Russel's ReportOpto dataset and performing
-analysis on it. Future work will make this more generalizable.]
+It is written for use with LakLab style experiments.
 
 ## Installation
 
@@ -109,15 +109,38 @@ For experiments with two-photon calcium imaging and simultaneous behavior:
 ```python
 from npixloader.load_exp_twop import TwoPRec
 
-# Load two-photon recording with behavior
-rec = TwoPRec(path='/path/to/animal/date/folder')
+# Basic loading (auto-detects compiled .tif file)
+rec = TwoPRec(enclosing_folder='/path/to/animal/date/',
+              folder_beh='1',
+              folder_img='TwoP/2025-06-17_t-001',
+              ch_img=2)  # Channel 1 or 2
 
 # Access components
-rec.beh      # Behavior data
-rec.img      # Two-photon imaging data (dF/F traces, ROIs)
-rec.aligner  # Alignment between imaging and behavior clocks
+rec.rec      # Raw .tif recording (memory-mapped, t x px_x x px_y)
+rec.rec_t    # Timestamps for imaging frames (aligned to behavior clock)
+rec.beh      # Behavior data (stim, rew, lick)
+rec.neur     # Suite2p outputs (F, ops, stat, iscell) if available
+rec.samp_rate  # Imaging sampling rate (Hz)
 ```
-	
+
+**Alignment modes for .tif recordings** (controlled by `rec_type` parameter):
+
+1. **'trig_rew'** (default): Imaging triggered at first reward delivery
+   - Simple time alignment: imaging start = first reward time
+   - Use when imaging acquisition is triggered by behavior system
+
+2. **'paqio'**: Manual acquisition with .paq synchronization file
+   - Uses reward echoes from both .paq (imaging) and Timeline.mat (behavior)
+   - Performs linear regression alignment between clocks
+   - Use when imaging and behavior started independently
+
+```python
+# Example: paqio alignment mode
+rec = TwoPRec(enclosing_folder='/path/to/animal/date/',
+              folder_beh='1',
+              folder_img='TwoP/2025-06-17_t-001',
+              rec_type='paqio')  # Uses Aligner_ImgBeh for clock alignment
+```
 	
 ## Analysis
 - `npix_loader.analysis_fns` contains functions to load and plot entire datasets
