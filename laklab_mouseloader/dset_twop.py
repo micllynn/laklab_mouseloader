@@ -8,7 +8,7 @@ from types import SimpleNamespace
 class DSetObj_5HTCtx(object):
     def __init__(self,
                  path_5htctx='/Users/michaellynn/Desktop/'
-                 + 'postdoc/projects/5HTCtx/visual_pavlov_mbl012-018/'
+                 + 'postdoc/projects/5HTCtx/cohorts/visual_pavlov_mbl012-018/'
                  + 'filelist_5HTCtx_3stim.csv',
                  path_to_server=None):
         """

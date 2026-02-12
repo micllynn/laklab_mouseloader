@@ -138,7 +138,7 @@ class TwoPRec(object):
 
         # load behavioral data
         # -------------
-        self.beh = BehDataSimpleLoad(self.folder.beh)
+        self.beh = BehDataSimpleLoad(self.folder.beh, parse_stims=False)
 
         self.beh.rew = SimpleNamespace()
         self.beh.stim = SimpleNamespace()
@@ -158,7 +158,7 @@ class TwoPRec(object):
             'stimulusOnTimes')
         self.beh.stim.stimlist = StimParser(self.beh)
 
-        self.beh.stim.id = self.beh.stim.stimlist._all_stimtypes
+        # self.beh.stim.id = self.beh.stim.stimlist._all_stimtypes
         self.beh.stim.prob = self.beh.stim.stimlist._all_stimprobs
         self.beh.stim.size = self.beh.stim.stimlist._all_stimsizes
 
@@ -2517,22 +2517,22 @@ class TwoPRec(object):
             # -------------
             self.neur.dff_aln[ind] = {}
             self.neur.dff_aln[ind]['0'] = np.zeros((
-                self.neur.tr_inds['0'].shape[0], n_frames_tot))
+                self.beh.tr_inds['0'].shape[0], n_frames_tot))
             self.neur.dff_aln[ind]['0.5'] = np.zeros((
-                self.neur.tr_inds['0.5'].shape[0], n_frames_tot))
+                self.beh.tr_inds['0.5'].shape[0], n_frames_tot))
             self.neur.dff_aln[ind]['1'] = np.zeros((
-                self.neur.tr_inds['1'].shape[0], n_frames_tot))
+                self.beh.tr_inds['1'].shape[0], n_frames_tot))
 
             self.neur.dff_aln[ind]['0.5_rew'] = np.zeros((
-                self.neur.tr_inds['0.5_rew'].shape[0], n_frames_tot))
+                self.beh.tr_inds['0.5_rew'].shape[0], n_frames_tot))
             self.neur.dff_aln[ind]['0.5_norew'] = np.zeros((
-                self.neur.tr_inds['0.5_norew'].shape[0], n_frames_tot))
+                self.beh.tr_inds['0.5_norew'].shape[0], n_frames_tot))
 
             self.neur.dff_aln[ind]['0.5_prelick'] = np.zeros((
-                self.neur.tr_inds['0.5_prelick'].shape[0],
+                self.beh.tr_inds['0.5_prelick'].shape[0],
                 n_frames_tot))
             self.neur.dff_aln[ind]['0.5_noprelick'] = np.zeros((
-                self.neur.tr_inds['0.5_noprelick'].shape[0],
+                self.beh.tr_inds['0.5_noprelick'].shape[0],
                 n_frames_tot))
 
             self.neur.dff_aln_mean[ind] = {}

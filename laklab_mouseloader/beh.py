@@ -290,7 +290,7 @@ class TimelineParser(object):
         return data
 
 
-class StimParser_Old(object):
+class _StimParser_Old(object):
     def __init__(self, beh):
         """
         Takes a BehData object as input and compiles a list
@@ -342,7 +342,8 @@ class StimParser_Old(object):
 
 
 class StimParser(object):
-    def __init__(self, beh, parse_by='stimulusOrientation'):
+    def __init__(self, beh, parse_by='stimulusOrientation',
+                 load_rew_mag_prob=True):
         """
         Parses trial-types from a Block file.
 
@@ -369,10 +370,11 @@ class StimParser(object):
         self.parse_by = parse_by
 
         # parse parameters for all trials
-        self._all_stimprobs = beh._data.get_event_var(
-            'rewardProbabilityValues')
-        self._all_stimsizes = beh._data.get_event_var(
-            'rewardMagnitudeValues')
+        if load_rew_mag_prob is True:
+            self._all_stimprobs = beh._data.get_event_var(
+                'rewardProbabilityValues')
+            self._all_stimsizes = beh._data.get_event_var(
+                'rewardMagnitudeValues')
 
         if parse_by == 'stimulusOrientation':
             # parse orientation

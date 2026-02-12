@@ -95,6 +95,7 @@ def plot_antic_licking(dset_obj, figsize=(2, 2),
 
 def plt_fig1_grab_summary(dset_obj,
                           dset_ind_ex=0,
+                          ch_img=1,
                           summary_fn=sp.integrate.trapezoid,
                           coding_type='optimism',
                           ind_rec_end=None,
@@ -109,6 +110,8 @@ def plt_fig1_grab_summary(dset_obj,
                               start=2, rot=0,
                               dark=0.1, light=0.6),
                           marker_size=60,
+                          ylim_neur_stim=None,
+                          ylim_neur_rew=None,
                           return_data_upon_fail=False):
     """
     Plots all stimulus-evoked GRAB5-HT responses across the whole
@@ -140,35 +143,32 @@ def plt_fig1_grab_summary(dset_obj,
         try:
             _exp = TwoPRec(dset_obj=dset_obj,
                            dset_ind=dset_ind,
-                           ch_img=1,
+                           ch_img=ch_img,
                            trial_end=dset_obj._dset_raw['trial_end'][dset_ind])
-            # _exp.plt_stim_aligned_avg(t_pre=t_pre, t_post=t_post,
-            #                           plt_show=False)
-            # _exp.add_lickrates(t_prestim=t_pre, t_poststim=t_post)
-
-            # _exp.add_stim_aligned_sectors(n_sectors=n_sectors,
-            #                               t_pre=t_pre, t_post=t_post,
-            #                               plt_show=False)
-            # _exp.plt_psychometric_stimscaling(plt_show=False)
-
             _exp.add_frame(t_pre=t_pre, t_post=t_post)
             _exp.add_sectors(n_sectors=n_sectors,
                              t_pre=t_pre, t_post=t_post)
+            _exp.add_neurs(t_pre=t_pre, t_post=t_post)
+            _exp.add_zetatest_neurs()
             _exp.add_psychometrics(t_pre=t_pre, t_post=t_post)
 
-            _ind_t_stim = np.argmin(np.abs(_exp.frame_avg.t - 0))
-            _ind_t_rew = np.argmin(np.abs(_exp.frame_avg.t - 2))
-            _ind_t_end = np.argmin(np.abs(_exp.frame_avg.t - (2+t_post)))
+            _ind_t_stim = np.argmin(np.abs(_exp.frame.t - 0))
+            _ind_t_rew = np.argmin(np.abs(_exp.frame.t - 2))
+            _ind_t_end = np.argmin(np.abs(_exp.frame.t - (2+t_post)))
 
             # On first recording, setup data structs
             if dset_ind == 0:
-                len_dff = _exp.frame_avg.dff['0'].shape[1]
+                len_dff = _exp.frame.dff['0'].shape[1]
 
                 data = SimpleNamespace()
                 data.dff_stim = {}
+                data.dff_neur_stim = {}
+                data.neur_zetapval = []
                 data.stats = SimpleNamespace(
                     stim_resp={},
                     rew_resp={},
+                    neur_stim_resp={},
+                    neur_rew_resp={},
                     stim_resp_norm={},
                     rew_resp_norm={},
                     between_sector_variance_stim={},
@@ -179,8 +179,12 @@ def plt_fig1_grab_summary(dset_obj,
 
                 for tr_cond in tr_conds:
                     data.dff_stim[tr_cond] = np.zeros((n_recs, len_dff))
+                    data.dff_neur_stim[tr_cond] = []
                     data.stats.stim_resp[tr_cond] = np.zeros(n_recs)
                     data.stats.rew_resp[tr_cond] = np.zeros(n_recs)
+                    data.stats.neur_stim_resp[tr_cond] = []
+                    data.stats.neur_rew_resp[tr_cond] = []
+
                     data.stats.stim_resp_norm[tr_cond] = np.zeros(n_recs)
                     data.stats.rew_resp_norm[tr_cond] = np.zeros(n_recs)
 
@@ -196,23 +200,46 @@ def plt_fig1_grab_summary(dset_obj,
             if dset_ind == dset_ind_ex:
                 data.exp_ex = _exp
 
-            # for this rec, iterate through all trials and store stuff
+            # store grab data
             print('\tstoring stim responses...')
-            data.dff_stim_t = _exp.frame_avg.t
+            data.dff_stim_t = _exp.frame.t
             for tr_cond in tr_conds:
                 data.dff_stim[tr_cond][dset_ind, :] = np.mean(
-                    _exp.frame_avg.dff[tr_cond], axis=0)
+                    _exp.frame.dff[tr_cond], axis=0)
                 data.stats.stim_resp[tr_cond][dset_ind] = np.mean(summary_fn(
-                    _exp.frame_avg.dff[tr_cond][:, _ind_t_stim:_ind_t_rew],
+                    _exp.frame.dff[tr_cond][:, _ind_t_stim:_ind_t_rew],
                     dx=1/_exp.samp_rate,
                     axis=1), axis=0)
                 data.stats.rew_resp[tr_cond][dset_ind] = np.mean(summary_fn(
-                    _exp.frame_avg.dff[tr_cond][:, _ind_t_rew:_ind_t_end],
+                    _exp.frame.dff[tr_cond][:, _ind_t_rew:_ind_t_end],
                     dx=1/_exp.samp_rate,
                     axis=1), axis=0)
 
                 data.stats.lick_stim_resp[tr_cond][dset_ind] = np.mean(
                     _exp.beh.lick.antic[tr_cond])
+
+            # store neural responses
+            print('\tstoring neural responses...')
+            data.neur_zetapval.append(_exp.neur.zeta_pval)
+            for tr_cond in tr_conds:
+                if _exp.neur.dff_aln_mean[tr_cond].shape[0] > 0:
+                    # Append neural df/f traces
+                    data.dff_neur_stim[tr_cond].append(
+                        _exp.neur.dff_aln_mean[tr_cond])
+
+                    # Compute and append stimulus response for each neuron
+                    _neur_stim_resp = summary_fn(
+                        _exp.neur.dff_aln_mean[tr_cond][:, _ind_t_stim:_ind_t_rew],
+                        dx=1/_exp.samp_rate,
+                        axis=1)
+                    data.stats.neur_stim_resp[tr_cond].append(_neur_stim_resp)
+
+                    # Compute and append reward response for each neuron
+                    _neur_rew_resp = summary_fn(
+                        _exp.neur.dff_aln_mean[tr_cond][:, _ind_t_rew:_ind_t_end],
+                        dx=1/_exp.samp_rate,
+                        axis=1)
+                    data.stats.neur_rew_resp[tr_cond].append(_neur_rew_resp)
 
             # store normalized versions of all
             _dff_resp_max = np.max(data.dff_stim[tr_cond][dset_ind, :])
@@ -293,236 +320,414 @@ def plt_fig1_grab_summary(dset_obj,
             data.stats.psychometrics.lick.optimism,
             _dset_inds_to_delete)
 
-    # setup plots
+    # concatenate neural data lists into arrays for plotting
+    print('\nconcatenating neural data...')
+    for tr_cond in tr_conds:
+        if len(data.dff_neur_stim[tr_cond]) > 0:
+            data.dff_neur_stim[tr_cond] = np.concatenate(
+                data.dff_neur_stim[tr_cond], axis=0)
+            data.stats.neur_stim_resp[tr_cond] = np.concatenate(
+                data.stats.neur_stim_resp[tr_cond], axis=0)
+            data.stats.neur_rew_resp[tr_cond] = np.concatenate(
+                data.stats.neur_rew_resp[tr_cond], axis=0)
+        else:
+            # If no neurons, create empty arrays
+            data.dff_neur_stim[tr_cond] = np.array([])
+            data.stats.neur_stim_resp[tr_cond] = np.array([])
+            data.stats.neur_rew_resp[tr_cond] = np.array([])
+
+    # ~~~~~~~~ setup plots ~~~~~~~~~~~~~
     # -----------
-    print('\nplotting...\n-------------')
-    fig = plt.figure(figsize=(6.86, 5))
-    spec = gs.GridSpec(nrows=3, ncols=6,
-                       figure=fig)
-    ax_dff = fig.add_subplot(spec[0, 0:2])
-    ax_stats_stim = fig.add_subplot(spec[0, 2])
-    ax_stats_rew = fig.add_subplot(spec[0, 3])
-    ax_stats_licks = fig.add_subplot(spec[0, 4])
-    ax_stats_lick_vs_stim = fig.add_subplot(spec[0, 5])
+    try:
+        print('\nplotting...\n-------------')
+        fig = plt.figure(figsize=(6.86, 5))
+        spec = gs.GridSpec(nrows=3, ncols=6,
+                           figure=fig)
+        ax_dff = fig.add_subplot(spec[0, 0:2])
+        ax_stats_stim = fig.add_subplot(spec[0, 2])
+        ax_stats_rew = fig.add_subplot(spec[0, 3])
+        ax_stats_licks = fig.add_subplot(spec[0, 4])
+        ax_stats_lick_vs_stim = fig.add_subplot(spec[0, 5])
 
-    ax_grab_variability = fig.add_subplot(spec[1, 0])
-    ax_optim_lick = fig.add_subplot(spec[1, 1])
-    ax_optimsim_ex = fig.add_subplot(spec[1, 2:4])
-    ax_optimism_ex_img = fig.add_subplot(spec[1, 4:6])
+        ax_optimism_ex = fig.add_subplot(spec[1, 0:2])
+        ax_optimism_ex_img = fig.add_subplot(spec[1, 2:4])
+        ax_optimism_pop = fig.add_subplot(spec[1, 4])
+        ax_optimism_pop_stdev = fig.add_subplot(spec[1, 5])
 
-    ax_optimism = fig.add_subplot(spec[2, 0:2])
-    ax_optimism_stdev = fig.add_subplot(spec[2, 2])
+        ax_dff_neur = fig.add_subplot(spec[2, 0:2])
+        ax_stats_neur_stim = fig.add_subplot(spec[2, 2])
+        ax_stats_neur_rew = fig.add_subplot(spec[2, 3])
 
-    # plot average df/f trace
-    # -----------
-    print('\taverage df/f traces...')
-    for tr_cond in ['0', '0.5_rew', '0.5_norew', '1']:
-        _dff_stim_mean = np.mean(data.dff_stim[tr_cond], axis=0)
-        _dff_stim_sem = sp.stats.sem(data.dff_stim[tr_cond], axis=0)
-        ax_dff.plot(data.dff_stim_t, _dff_stim_mean,
-                    color=plt_params.colors[tr_cond],
-                    linestyle=plt_params.linestyles[tr_cond])
-        ax_dff.fill_between(data.dff_stim_t,
-                            _dff_stim_mean - _dff_stim_sem,
-                            _dff_stim_mean + _dff_stim_sem,
-                            facecolor=plt_params.colors[tr_cond],
-                            alpha=0.2)
-    ax_dff.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
-                   linewidth=1.5, alpha=0.8,
-                   linestyle='dashed')
-    ax_dff.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
-                   linewidth=1.5, alpha=0.8,
-                   linestyle='dashed')
-    ax_dff.set_ylabel(r'$GRAB_\mathrm{5-HT}$ ($\frac {\mathrm{d}F}{F}$)')
-    ax_dff.set_xlabel('time from stim (s)')
+        # ax_optimism = fig.add_subplot(spec[2, 0:2])
+        # ax_optimism_stdev = fig.add_subplot(spec[2, 2])
 
-    # plot stats: stimulus-locked dff
-    # ------------
-    print('\tstimulus-locked df/f...')
-    for dset_ind in range(len(data.stats.stim_resp['0'])):
-        ax_stats_stim.plot(
-            [0, 1, 2],
-            [data.stats.stim_resp['0'][dset_ind],
-             data.stats.stim_resp['0.5'][dset_ind],
-             data.stats.stim_resp['1'][dset_ind]],
-            color=sns.xkcd_rgb['light grey'],
-            linewidth=0.8)
+        # plot average df/f trace
+        # -----------
+        print('\taverage df/f traces...')
+        for tr_cond in ['0', '0.5_rew', '0.5_norew', '1']:
+            _dff_stim_mean = np.mean(data.dff_stim[tr_cond], axis=0)
+            _dff_stim_sem = sp.stats.sem(data.dff_stim[tr_cond], axis=0)
+            ax_dff.plot(data.dff_stim_t, _dff_stim_mean,
+                        color=plt_params.colors[tr_cond],
+                        linestyle=plt_params.linestyles[tr_cond])
+            ax_dff.fill_between(data.dff_stim_t,
+                                _dff_stim_mean - _dff_stim_sem,
+                                _dff_stim_mean + _dff_stim_sem,
+                                facecolor=plt_params.colors[tr_cond],
+                                alpha=0.2)
+        ax_dff.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
+                       linewidth=1.5, alpha=0.8,
+                       linestyle='dashed')
+        ax_dff.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
+                       linewidth=1.5, alpha=0.8,
+                       linestyle='dashed')
+        ax_dff.set_ylabel(r'$GRAB_\mathrm{5-HT}$ ($\frac {\mathrm{d}F}{F}$)')
+        ax_dff.set_xlabel('time from stim (s)')
 
-    for tr_ind, tr_cond in enumerate(['0', '0.5', '1']):
-        ax_stats_stim.scatter(
-            np.ones_like(data.stats.stim_resp[tr_cond])*tr_ind,
-            data.stats.stim_resp[tr_cond],
-            s=marker_size, facecolors='none',
-            edgecolors=plt_params.colors[tr_cond])
+        # plot stats: stimulus-locked dff
+        # ------------
+        print('\tstimulus-locked df/f...')
+        for dset_ind in range(len(data.stats.stim_resp['0'])):
+            ax_stats_stim.plot(
+                [0, 1, 2],
+                [data.stats.stim_resp['0'][dset_ind],
+                 data.stats.stim_resp['0.5'][dset_ind],
+                 data.stats.stim_resp['1'][dset_ind]],
+                color=sns.xkcd_rgb['light grey'],
+                linewidth=0.8)
 
-    for _ax in [ax_stats_stim]:
-        _ax.set_xticks([0, 1, 2])
-        _ax.set_xticklabels(['0', '0.5', '1'])
-        _ax.set_xlabel('p(rew)')
-
-    # plot stats: rew-locked dff
-    # ------------
-    print('\treward-locked df/f...')
-    for dset_ind in range(len(data.stats.stim_resp['0'])):
-        ax_stats_rew.plot(
-            [0, 1, 2, 3],
-            [data.stats.rew_resp['0'][dset_ind],
-             data.stats.rew_resp['0.5_norew'][dset_ind],
-             data.stats.rew_resp['0.5_rew'][dset_ind],
-             data.stats.rew_resp['1'][dset_ind]],
-            color=sns.xkcd_rgb['light grey'],
-            linewidth=0.8)
-
-    for tr_ind, tr_cond in enumerate(['0', '0.5_norew', '0.5_rew', '1']):
-        ax_stats_rew.scatter(
-            np.ones_like(data.stats.rew_resp[tr_cond])*tr_ind,
-            data.stats.rew_resp[tr_cond],
-            s=marker_size, facecolors='none',
-            edgecolors=plt_params.colors[tr_cond])
-
-    for _ax in [ax_stats_rew]:
-        _ax.set_xticks([0, 1, 2, 3])
-        _ax.set_xticklabels(['0', '0.5_norew', '0.5_rew', '1'])
-        _ax.set_xlabel('p(rew)')
-
-    # setup y labels for all GRAB summary plots
-    # ------------
-    _ylabel_base = r'$GRAB_\mathrm{5-HT}$ '
-    if summary_fn == sp.integrate.trapezoid:
-        _ylabel_suffix = r'($\int \frac{\mathrm{d}F}{F} \mathrm{d}t$)'
-    elif summary_fn == np.mean:
-        _ylabel_suffix = r'($\frac{\mathrm{d}F}{F}$)'
-
-    ax_stats_stim.set_ylabel(r'{}'.format(
-        'stim-evoked ' + _ylabel_base + _ylabel_suffix))
-    ax_stats_rew.set_ylabel(r'{}'.format(
-        'rew-evoked ' + _ylabel_base + _ylabel_suffix))
-
-    # plot licking
-    # --------------
-    print('\tlicking stats...')
-    for dset_ind in range(len(data.stats.stim_resp['0'])):
-        ax_stats_licks.plot(
-            [0, 1, 2],
-            [data.stats.lick_stim_resp['0'][dset_ind],
-             data.stats.lick_stim_resp['0.5'][dset_ind],
-             data.stats.lick_stim_resp['1'][dset_ind]],
-            color=sns.xkcd_rgb['light grey'],
-            linewidth=0.8)
         for tr_ind, tr_cond in enumerate(['0', '0.5', '1']):
-            ax_stats_licks.scatter(
-                np.ones_like(data.stats.lick_stim_resp[tr_cond])*tr_ind,
-                data.stats.lick_stim_resp[tr_cond],
+            ax_stats_stim.scatter(
+                np.ones_like(data.stats.stim_resp[tr_cond])*tr_ind,
+                data.stats.stim_resp[tr_cond],
                 s=marker_size, facecolors='none',
                 edgecolors=plt_params.colors[tr_cond])
-    ax_stats_licks.set_xticks([0, 1, 2])
-    ax_stats_licks.set_xticklabels(['0', '0.5', '1'])
-    ax_stats_licks.set_xlabel('p(rew)')
-    ax_stats_licks.set_ylabel('antic. licks (Hz)')
 
-    # plot correlation between licking and GRAB
-    # -------------
-    _lick_resp_all = []
-    _stim_resp_all = []
-    for tr_cond in ['0', '0.5', '1']:
-        ax_stats_lick_vs_stim.scatter(
-            data.stats.lick_stim_resp[tr_cond], data.stats.stim_resp[tr_cond],
-            s=marker_size, facecolors='none',
-            edgecolors=plt_params.colors[tr_cond])
-        _lick_resp_all.append(data.stats.lick_stim_resp[tr_cond])
-        _stim_resp_all.append(data.stats.stim_resp[tr_cond])
+        # Add means with filled circles and connecting lines
+        _stim_means = [np.mean(data.stats.stim_resp['0']),
+                       np.mean(data.stats.stim_resp['0.5']),
+                       np.mean(data.stats.stim_resp['1'])]
+        ax_stats_stim.plot([0, 1, 2], _stim_means,
+                           color='black', linewidth=1.0, alpha=0.8, zorder=10)
+        for tr_ind, (tr_cond, mean_val) in enumerate(zip(
+                ['0', '0.5', '1'], _stim_means)):
+            ax_stats_stim.scatter(tr_ind, mean_val, s=marker_size,
+                                  facecolors=plt_params.colors[tr_cond],
+                                  edgecolors=plt_params.colors[tr_cond],
+                                  alpha=0.8, zorder=11)
 
-    ax_stats_lick_vs_stim.set_xlabel('antic. licks (Hz)')
-    ax_stats_lick_vs_stim.set_ylabel(r'{}'.format(
-        'stim-evoked ' + _ylabel_base + _ylabel_suffix))
+        for _ax in [ax_stats_stim]:
+            _ax.set_xticks([0, 1, 2])
+            _ax.set_xticklabels(['0', '0.5', '1'])
+            _ax.set_xlabel('p(rew)')
 
-    # data.lick_stim_resp_linreg = sp.stats.linregress(
-    #     _lick_resp_all, _stim_resp_all)
+        # plot stats: rew-locked dff
+        # ------------
+        print('\treward-locked df/f...')
+        for dset_ind in range(len(data.stats.stim_resp['0'])):
+            ax_stats_rew.plot(
+                [0, 1, 2, 3],
+                [data.stats.rew_resp['0'][dset_ind],
+                 data.stats.rew_resp['0.5_norew'][dset_ind],
+                 data.stats.rew_resp['0.5_rew'][dset_ind],
+                 data.stats.rew_resp['1'][dset_ind]],
+                color=sns.xkcd_rgb['light grey'],
+                linewidth=0.8)
 
-    # sector heterogeneity
-    # ----------------
-    optim_grab_ex = data.stats.grab_psychometric.optimism[dset_ind_ex]
-    optim_grab = data.stats.grab_psychometric.optimism
-    optim_lick = data.stats.lick_psychometric.optimism[dset_ind_ex]
+        for tr_ind, tr_cond in enumerate(['0', '0.5_norew', '0.5_rew', '1']):
+            ax_stats_rew.scatter(
+                np.ones_like(data.stats.rew_resp[tr_cond])*tr_ind,
+                data.stats.rew_resp[tr_cond],
+                s=marker_size, facecolors='none',
+                edgecolors=plt_params.colors[tr_cond])
 
-    # ---- plot sector heterogeneity example --------
-    # cleanup optimism extreme vals
-    _outliers = np.where(np.abs(optim_grab_ex) > optimism_outlier_thresh)
-    optim_grab_ex = np.delete(optim_grab_ex, _outliers)
+        # Add means with filled circles and connecting lines
+        _rew_means = [np.mean(data.stats.rew_resp['0']),
+                      np.mean(data.stats.rew_resp['0.5_norew']),
+                      np.mean(data.stats.rew_resp['0.5_rew']),
+                      np.mean(data.stats.rew_resp['1'])]
+        ax_stats_rew.plot([0, 1, 2, 3], _rew_means,
+                         color='black', linewidth=1.0, alpha=0.8, zorder=10)
+        for tr_ind, (tr_cond, mean_val) in enumerate(zip(
+                ['0', '0.5_norew', '0.5_rew', '1'], _rew_means)):
+            ax_stats_rew.scatter(tr_ind, mean_val, s=marker_size,
+                                 facecolors=plt_params.colors[tr_cond],
+                                 edgecolors=plt_params.colors[tr_cond],
+                                 alpha=0.8, zorder=11)
 
-    ax_optimsim_ex.scatter(
-        np.arange(len(optim_grab_ex)),
-        np.sort(optim_grab_ex),
-        facecolors=sns.xkcd_rgb['moss green'])
-    ax_optimsim_ex.axhline(
-        optim_lick,
-        linestyle='dashed', color=sns.xkcd_rgb['moss green'],
-        linewidth=0.5)
+        for _ax in [ax_stats_rew]:
+            _ax.set_xticks([0, 1, 2, 3])
+            _ax.set_xticklabels(['0', '0.5_norew', '0.5_rew', '1'])
+            _ax.set_xlabel('p(rew)')
 
-    if range_coding_spatial is None:
-        v_abs_max = np.max(np.abs(optim_grab_ex))
-        spatial_codinghet = ax_optimism_ex_img.imshow(
-            optim_grab_ex.reshape(10, 10),
-            vmax=v_abs_max, vmin=-1*v_abs_max,
-            cmap='coolwarm')
-    else:
-        spatial_codinghet = ax_optimism_ex_img.imshow(
-            optim_grab_ex.reshape(n_sectors, n_sectors),
-            vmin=range_coding_spatial[0],
-            vmax=range_coding_spatial[1],
-            cmap='coolwarm')
+        # setup y labels for all GRAB summary plots
+        # ------------
+        _ylabel_base = r'$GRAB_\mathrm{5-HT}$ '
+        if summary_fn == sp.integrate.trapezoid:
+            _ylabel_suffix = r'($\int \frac{\mathrm{d}F}{F} \mathrm{d}t$)'
+        elif summary_fn == np.mean:
+            _ylabel_suffix = r'($\frac{\mathrm{d}F}{F}$)'
 
-    fig.colorbar(spatial_codinghet, ax=ax_optimism_ex_img,
-                 location='right', shrink=0.5)
+        ax_stats_stim.set_ylabel(r'{}'.format(
+            'stim-evoked ' + _ylabel_base + _ylabel_suffix))
+        ax_stats_rew.set_ylabel(r'{}'.format(
+            'rew-evoked ' + _ylabel_base + _ylabel_suffix))
 
-    # ------- plot sector heterogeneity (all) -------
-    _grab_psych_pop_all = np.empty(0)
-    for dset_ind in range(n_recs):
-        _grab_psych_pop_all = np.append(
-            _grab_psych_pop_all,
-            optim_grab[dset_ind])
-        ax_optimism.scatter(
-            np.arange(len(_grab_psych_pop_all)),
-            np.sort(np.array(_grab_psych_pop_all)),
+        # plot licking
+        # --------------
+        print('\tlicking stats...')
+        for dset_ind in range(len(data.stats.stim_resp['0'])):
+            ax_stats_licks.plot(
+                [0, 1, 2],
+                [data.stats.lick_stim_resp['0'][dset_ind],
+                 data.stats.lick_stim_resp['0.5'][dset_ind],
+                 data.stats.lick_stim_resp['1'][dset_ind]],
+                color=sns.xkcd_rgb['light grey'],
+                linewidth=0.8)
+            for tr_ind, tr_cond in enumerate(['0', '0.5', '1']):
+                ax_stats_licks.scatter(
+                    np.ones_like(data.stats.lick_stim_resp[tr_cond])*tr_ind,
+                    data.stats.lick_stim_resp[tr_cond],
+                    s=marker_size, facecolors='none',
+                    edgecolors=plt_params.colors[tr_cond])
+        ax_stats_licks.set_xticks([0, 1, 2])
+        ax_stats_licks.set_xticklabels(['0', '0.5', '1'])
+        ax_stats_licks.set_xlabel('p(rew)')
+        ax_stats_licks.set_ylabel('antic. licks (Hz)')
+
+        # plot correlation between licking and GRAB
+        # -------------
+        _lick_resp_all = []
+        _stim_resp_all = []
+        for tr_cond in ['0', '0.5', '1']:
+            ax_stats_lick_vs_stim.scatter(
+                data.stats.lick_stim_resp[tr_cond], data.stats.stim_resp[tr_cond],
+                s=marker_size, facecolors='none',
+                edgecolors=plt_params.colors[tr_cond])
+            _lick_resp_all.append(data.stats.lick_stim_resp[tr_cond])
+            _stim_resp_all.append(data.stats.stim_resp[tr_cond])
+
+        ax_stats_lick_vs_stim.set_xlabel('antic. licks (Hz)')
+        ax_stats_lick_vs_stim.set_ylabel(r'{}'.format(
+            'stim-evoked ' + _ylabel_base + _ylabel_suffix))
+
+        # data.lick_stim_resp_linreg = sp.stats.linregress(
+        #     _lick_resp_all, _stim_resp_all)
+
+        # sector heterogeneity
+        # ----------------
+        print('sector heterogeneity....')
+        optim_grab_ex = data.stats.psychometrics.grab.optimism[dset_ind_ex]
+        optim_grab = data.stats.psychometrics.grab.optimism
+        optim_lick = data.stats.psychometrics.lick.optimism[dset_ind_ex]
+
+        # ---- plot sector heterogeneity example --------
+        # cleanup optimism extreme vals
+        # _outliers = np.where(np.abs(optim_grab_ex) > optimism_outlier_thresh)
+        # optim_grab_ex = np.delete(optim_grab_ex, _outliers)
+
+        ax_optimism_ex.scatter(
+            np.arange(len(optim_grab_ex)),
+            np.sort(optim_grab_ex),
             facecolors=sns.xkcd_rgb['moss green'])
+        ax_optimism_ex.axhline(
+            optim_lick,
+            linestyle='dashed', color=sns.xkcd_rgb['moss green'],
+            linewidth=0.5)
 
-    for _ax in [ax_optimsim_ex, ax_optimism]:
-        _ax.set_xlabel('spatial sectors (sorted)')
-        if coding_type == 'linearity':
-            _ax.axhline(0.5, linestyle='dashed',
-                        linewidth=1, color='black')
-            _ax.set_ylabel(
-                r'value linearity index'
-                + r' ($\frac {R_{0.5}-R_{0}} {R_{1}-R{0}}$)')
-        elif coding_type == 'optimism':
-            _ax.axhline(0.5, linestyle='dashed',
-                        linewidth=1, color='black')
-            _ax.set_ylabel(
-                r'optimism index'
-                + r' ($ \frac {\alpha_{0-0.5}} {(\alpha_{0-0.5} + \alpha_{0.5-1})}$)')
+        if range_coding_spatial is None:
+            v_abs_max = np.max(np.abs(optim_grab_ex))
+            spatial_codinghet = ax_optimism_ex_img.imshow(
+                optim_grab_ex.reshape(10, 10),
+                vmax=v_abs_max, vmin=-1*v_abs_max,
+                cmap='coolwarm')
+        else:
+            spatial_codinghet = ax_optimism_ex_img.imshow(
+                optim_grab_ex.reshape(n_sectors, n_sectors),
+                vmin=range_coding_spatial[0],
+                vmax=range_coding_spatial[1],
+                cmap='coolwarm')
 
-    _stdev_grab_psych_pop = []
-    for dset_ind in range(n_recs):
-        try:
-            _stdev_grab_psych_pop.append(np.std(optim_grab[dset_ind]))
-        except:
-            pass
+        fig.colorbar(spatial_codinghet, ax=ax_optimism_ex_img,
+                     location='right', shrink=0.5)
 
-    ax_optimism_stdev.scatter(
-        np.ones_like(_stdev_grab_psych_pop),
-        _stdev_grab_psych_pop, s=marker_size,
-        facecolors='none',
-        edgecolors=sns.xkcd_rgb['moss green'])
-    ax_optimism_stdev.set_ylabel('std. GRAB optimism')
+        # ------- plot sector heterogeneity (all) -------
+        _grab_psych_pop_all = np.empty(0)
+        for dset_ind in range(n_recs):
+            try:
+                _grab_psych_pop_all = np.append(
+                    _grab_psych_pop_all,
+                    optim_grab[dset_ind])
+                ax_optimism_pop.scatter(
+                    np.arange(len(_grab_psych_pop_all)),
+                    np.sort(np.array(_grab_psych_pop_all)),
+                    facecolors=sns.xkcd_rgb['moss green'])
+            except Exception:
+                pass
 
-    # save and show
-    # -------------
-    fig.savefig('/Users/michaellynn/Desktop/postdoc/projects/'
-                + '5HTCtx/visual_pavlov_mbl012-018/figs/'
-                + f'fig1_summaryfn={summary_fn.__name__}'
-                + f'_{coding_type=}'
-                + '.pdf')
-    plt.show()
+        for _ax in [ax_optimism_ex, ax_optimism_pop]:
+            _ax.set_xlabel('spatial sectors (sorted)')
+            if coding_type == 'linearity':
+                _ax.axhline(0.5, linestyle='dashed',
+                            linewidth=1, color='black')
+                _ax.set_ylabel(
+                    r'value linearity index'
+                    + r' ($\frac {R_{0.5}-R_{0}} {R_{1}-R{0}}$)')
+            elif coding_type == 'optimism':
+                _ax.axhline(0.5, linestyle='dashed',
+                            linewidth=1, color='black')
+                _ax.set_ylabel(
+                    r'optimism index'
+                    + r' ($ \frac {\alpha_{0-0.5}} {(\alpha_{0-0.5} + \alpha_{0.5-1})}$)')
+
+        _stdev_grab_psych_pop = []
+        for dset_ind in range(n_recs):
+            try:
+                _stdev_grab_psych_pop.append(np.std(optim_grab[dset_ind]))
+            except:
+                pass
+
+        ax_optimism_pop_stdev.scatter(
+            np.ones_like(_stdev_grab_psych_pop),
+            _stdev_grab_psych_pop, s=marker_size,
+            facecolors='none',
+            edgecolors=sns.xkcd_rgb['moss green'])
+        ax_optimism_pop_stdev.set_ylabel('std. GRAB optimism')
+
+        # plot neural data
+        # ----------------
+        print('\tneural df/f traces...')
+        for tr_cond in ['0', '0.5_rew', '0.5_norew', '1']:
+            if len(data.dff_neur_stim[tr_cond]) > 0:
+                _dff_neur_mean = np.mean(data.dff_neur_stim[tr_cond], axis=0)
+                _dff_neur_sem = sp.stats.sem(data.dff_neur_stim[tr_cond], axis=0)
+                ax_dff_neur.plot(data.dff_stim_t, _dff_neur_mean,
+                                 color=plt_params.colors[tr_cond],
+                                 linestyle=plt_params.linestyles[tr_cond])
+                ax_dff_neur.fill_between(data.dff_stim_t,
+                                         _dff_neur_mean - _dff_neur_sem,
+                                         _dff_neur_mean + _dff_neur_sem,
+                                         facecolor=plt_params.colors[tr_cond],
+                                         alpha=0.2)
+        ax_dff_neur.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
+                            linewidth=1.5, alpha=0.8,
+                            linestyle='dashed')
+        ax_dff_neur.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
+                            linewidth=1.5, alpha=0.8,
+                            linestyle='dashed')
+        ax_dff_neur.set_ylabel(r'Neural ($\frac {\mathrm{d}F}{F}$)')
+        ax_dff_neur.set_xlabel('time from stim (s)')
+
+        # plot neural stats: stimulus-locked
+        # -----------------------------------
+        print('\tstimulus-locked neural responses...')
+        # First draw thin lines connecting individual neurons across conditions
+        if len(data.stats.neur_stim_resp['0']) > 0:
+            n_neurons = len(data.stats.neur_stim_resp['0'])
+            for neur_ind in range(n_neurons):
+                ax_stats_neur_stim.plot(
+                    [0, 1, 2],
+                    [data.stats.neur_stim_resp['0'][neur_ind],
+                     data.stats.neur_stim_resp['0.5'][neur_ind],
+                     data.stats.neur_stim_resp['1'][neur_ind]],
+                    color=sns.xkcd_rgb['light grey'],
+                    linewidth=0.3, alpha=0.3)
+
+        # Then draw individual neuron scatter points
+        for tr_ind, tr_cond in enumerate(['0', '0.5', '1']):
+            if len(data.stats.neur_stim_resp[tr_cond]) > 0:
+                ax_stats_neur_stim.scatter(
+                    np.ones_like(data.stats.neur_stim_resp[tr_cond])*tr_ind,
+                    data.stats.neur_stim_resp[tr_cond],
+                    s=marker_size/2, facecolors='none',
+                    edgecolors=plt_params.colors[tr_cond],
+                    alpha=0.3)
+
+        # Add means with filled circles and connecting lines
+        # if len(data.stats.neur_stim_resp['0']) > 0:
+        _neur_stim_means = [np.mean(data.stats.neur_stim_resp['0']),
+                            np.mean(data.stats.neur_stim_resp['0.5']),
+                            np.mean(data.stats.neur_stim_resp['1'])]
+        ax_stats_neur_stim.plot([0, 1, 2], _neur_stim_means,
+                                color='black', linewidth=1.0, alpha=0.8, zorder=10)
+        for tr_ind, (tr_cond, mean_val) in enumerate(zip(
+                ['0', '0.5', '1'], _neur_stim_means)):
+            ax_stats_neur_stim.scatter(tr_ind, mean_val, s=marker_size,
+                                       facecolors=plt_params.colors[tr_cond],
+                                       edgecolors=plt_params.colors[tr_cond],
+                                       alpha=0.8, zorder=11)
+
+        ax_stats_neur_stim.set_xticks([0, 1, 2])
+        ax_stats_neur_stim.set_xticklabels(['0', '0.5', '1'])
+        ax_stats_neur_stim.set_xlabel('p(rew)')
+        _ylabel_neur_base = r'Neural '
+        ax_stats_neur_stim.set_ylabel(r'{}'.format(
+            'stim-evoked ' + _ylabel_neur_base + _ylabel_suffix))
+        if ylim_neur_stim is not None:
+            ax_stats_neur_stim.set_ylim(ylim_neur_stim)
+
+        # plot neural stats: reward-locked
+        # ---------------------------------
+        print('\treward-locked neural responses...')
+        # First draw thin lines connecting individual neurons across conditions
+        if len(data.stats.neur_rew_resp['0']) > 0:
+            n_neurons = len(data.stats.neur_rew_resp['0'])
+            for neur_ind in range(n_neurons):
+                ax_stats_neur_rew.plot(
+                    [0, 1, 2, 3],
+                    [data.stats.neur_rew_resp['0'][neur_ind],
+                     data.stats.neur_rew_resp['0.5_norew'][neur_ind],
+                     data.stats.neur_rew_resp['0.5_rew'][neur_ind],
+                     data.stats.neur_rew_resp['1'][neur_ind]],
+                    color=sns.xkcd_rgb['light grey'],
+                    linewidth=0.3, alpha=0.3)
+
+        # Then draw individual neuron scatter points
+        for tr_ind, tr_cond in enumerate(['0', '0.5_norew', '0.5_rew', '1']):
+            if len(data.stats.neur_rew_resp[tr_cond]) > 0:
+                ax_stats_neur_rew.scatter(
+                    np.ones_like(data.stats.neur_rew_resp[tr_cond])*tr_ind,
+                    data.stats.neur_rew_resp[tr_cond],
+                    s=marker_size/2, facecolors='none',
+                    edgecolors=plt_params.colors[tr_cond],
+                    alpha=0.3)
+
+        # Add means with filled circles and connecting lines
+        # if len(data.stats.neur_rew_resp['0']) > 0:
+        _neur_rew_means = [np.mean(data.stats.neur_rew_resp['0']),
+                           np.mean(data.stats.neur_rew_resp['0.5_norew']),
+                           np.mean(data.stats.neur_rew_resp['0.5_rew']),
+                           np.mean(data.stats.neur_rew_resp['1'])]
+        ax_stats_neur_rew.plot([0, 1, 2, 3], _neur_rew_means,
+                               color='black', linewidth=1.0, alpha=0.8, zorder=10)
+        for tr_ind, (tr_cond, mean_val) in enumerate(zip(
+                ['0', '0.5_norew', '0.5_rew', '1'], _neur_rew_means)):
+            ax_stats_neur_rew.scatter(tr_ind, mean_val, s=marker_size,
+                                      facecolors=plt_params.colors[tr_cond],
+                                      edgecolors=plt_params.colors[tr_cond],
+                                      alpha=0.8, zorder=11)
+
+        ax_stats_neur_rew.set_xticks([0, 1, 2, 3])
+        ax_stats_neur_rew.set_xticklabels(['0', '0.5_norew', '0.5_rew', '1'])
+        ax_stats_neur_rew.set_xlabel('p(rew)')
+        ax_stats_neur_rew.set_ylabel(r'{}'.format(
+            'rew-evoked ' + _ylabel_neur_base + _ylabel_suffix))
+        if ylim_neur_rew is not None:
+            ax_stats_neur_rew.set_ylim(ylim_neur_rew)
+
+        # save and show
+        # -------------
+        fig.savefig('/Users/michaellynn/Desktop/postdoc/projects/'
+                    + '5HTCtx/cohorts/visual_pavlov_mbl012-018/figs/'
+                    + f'fig1_summaryfn={summary_fn.__name__}'
+                    + f'_{ch_img=}'
+                    + f'_{coding_type=}'
+                    + '.pdf')
+        plt.show()
+
+    except Exception as err:
+        print(f"Unexpected {err=}, {type(err)=}")
+        return data
 
     return data
 
