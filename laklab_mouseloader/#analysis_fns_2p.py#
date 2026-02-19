@@ -852,7 +852,7 @@ def run_correction_method_comparison(dset_obj,
         Skip all recordings with index below this value. (default: 0)
     """
     if methods is None:
-        methods = ['linear', 'robust', 'lms']
+        methods = ['linear', 'robust', 'pca', 'nmf']
 
     n_recs = dset_obj._dset_raw['expref'].shape[0]
 
@@ -860,16 +860,13 @@ def run_correction_method_comparison(dset_obj,
         n_sectors=n_sectors,
         t_pre=t_pre,
         t_post=t_post,
-        auto_gain_dff=True,
-        minimal_output=True,
+        
         plt_show=False)
 
-    _add_sectors_kwargs = dict(
-        n_sectors=n_sectors,
-        t_pre=t_pre,
-        t_post=t_post,
-        compute_null=False,
-        compute_resid_corr=False)
+    def _plt_dff(use_zscore):
+        y_gain = 0.05 if use_zscore else 10
+        return {'x': {'gain': 0.6, 'offset': 0.2},
+                'y': {'gain': y_gain, 'offset': 0.2}}
 
     def _flush_mem(label=''):
         """Close all figures, delete matplotlib state, collect garbage."""
@@ -909,16 +906,14 @@ def run_correction_method_comparison(dset_obj,
         # -- uncorrected baseline --
         print('\n  --- uncorrected ---')
         try:
-            for use_zscore in [False]:
-                for ch in ['grn', 'red']:
-                    exp.add_sectors(**_add_sectors_kwargs,
-                                    use_zscore=use_zscore,
-                                    channel=ch)
-                    exp.plt_sectors(**_plt_sectors_kwargs,
-                                    use_zscore=use_zscore,
-                                    plt_prefix='uncorrected',
-                                    channel=ch)
-                    plt.close('all')
+            for use_zscore in [True, False]:
+                exp.add_sectors(n_sectors=n_sectors, t_pre=t_pre,
+                                t_post=t_post, use_zscore=use_zscore)
+                exp.plt_sectors(**_plt_sectors_kwargs,
+                                plt_dff=_plt_dff(use_zscore),
+                                use_zscore=use_zscore,
+                                plt_prefix='uncorrected')
+                plt.close('all')
         except Exception as e:
             print(f'  failed for uncorrected: {e}')
         finally:
@@ -936,9 +931,10 @@ def run_correction_method_comparison(dset_obj,
                     save_to_disk=False)
 
                 for use_zscore in [True, False]:
-                    exp.add_sectors(**_add_sectors_kwargs,
-                                    use_zscore=use_zscore)
+                    exp.add_sectors(n_sectors=n_sectors, t_pre=t_pre,
+                                    t_post=t_post, use_zscore=use_zscore)
                     exp.plt_sectors(**_plt_sectors_kwargs,
+                                    plt_dff=_plt_dff(use_zscore),
                                     use_zscore=use_zscore,
                                     plt_prefix=f'corr_{method}')
                     plt.close('all')
