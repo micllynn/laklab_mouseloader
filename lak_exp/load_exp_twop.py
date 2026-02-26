@@ -101,35 +101,12 @@ class TwoPRec(object):
         .ops : SimpleNamespace | stores all relevant options for
         """
 
-        # setup names of folders and files
+        # setup names of folders, files, and ops
         # --------------
-        self.folder = SimpleNamespace()
-        self.path = SimpleNamespace()
-        if dset_obj is None:
-            self.folder.enclosing = enclosing_folder
-            self.folder.img = folder_img
-            self.folder.beh = folder_beh
-            print(f'loading {self.folder.enclosing}...\n---------------')
-
-        elif 'DSetObj' in str(type(dset_obj)):
-            self.dset_obj = dset_obj
-            self.folder.enclosing = self.dset_obj.get_path_expref(dset_ind)
-            self.folder.img = self.dset_obj.get_path_img(dset_ind)
-            self.folder.beh = self.dset_obj.get_path_beh(dset_ind)
-            print(f'loading {self.dset_obj.get_path_expref(dset_ind)}...')
-            print('---------------')
-
-        self.path.raw = pathlib.Path(self.folder.enclosing)
-        self.path.animal = self.path.raw.parts[-2]
-        self.path.date = self.path.raw.parts[-1]
-        self.path.beh_folder = self.folder.beh
+        self._init_folders(enclosing_folder, folder_beh, folder_img,
+                           dset_obj, dset_ind)
         self.ch_img = ch_img
-
-        os.chdir(self.folder.enclosing)
-        check_folder_exists('figs_mbl')  # to store all figs
-        self.ops = SimpleNamespace()
-        self.ops.n_px_remove_sides = n_px_remove_sides
-        self.ops.rec_type = rec_type
+        self._init_ops(n_px_remove_sides, rec_type)
 
         # get filename of image of the appropriate channel
         list_img = os.listdir(self.folder.img)
@@ -142,37 +119,7 @@ class TwoPRec(object):
 
         # load behavioral data
         # -------------
-        self.beh = BehDataSimpleLoad(self.folder.beh, parse_stims=parse_stims,
-                                     parse_by=parse_by)
-
-        self.beh.rew = SimpleNamespace()
-        self.beh.stim = SimpleNamespace()
-
-        self.beh.rew.delivered = self.beh._data.get_event_var(
-            'isRewardGivenValues')
-
-        self.beh.rew.t = self.beh._data.get_event_var('totalRewardTimes')[
-            np.where(self.beh.rew.delivered == 1)[0]]
-
-        _daq_data = self.beh._timeline.get_daq_data()
-        self.beh.licks = find_event_onsets_autothresh(
-            _daq_data.sig['lickDetector'])
-        self.beh.t_licks = _daq_data.t[self.beh.licks]
-
-        self.beh.stim.t_start = self.beh._data.get_event_var(
-            'stimulusOnTimes')
-        self.beh.stim.stimlist = StimParser(self.beh, parse_by=parse_by)
-
-        # self.beh.stim.id = self.beh.stim.stimlist._all_stimtypes
-        self.beh.stim.prob = self.beh.stim.stimlist._all_stimprobs
-        self.beh.stim.size = self.beh.stim.stimlist._all_stimsizes
-
-        self.beh.lick = SimpleNamespace()
-
-        t_licksig = self.beh._daq_data.t
-        lick_onset_inds = find_event_onsets_autothresh(
-            self.beh._daq_data.sig['lickDetector'], n_stdevs=4)
-        self.beh.lick.t_raw = t_licksig[lick_onset_inds]
+        self._init_behavior(parse_stims=parse_stims, parse_by=parse_by)
 
         # load imaging data
         # ------------
@@ -195,90 +142,15 @@ class TwoPRec(object):
                 n_px_remove_sides:-1*n_px_remove_sides]
 
         # try to load suite2p output if available
-        print('\tloading suite2p neurs...')
-        try:
-            self.neur = SimpleNamespace()
-            self.neur.f = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'F.npy'),
-                allow_pickle=True)
-            self.neur.ops = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'ops.npy'),
-                allow_pickle=True)
-            self.neur.stat = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'stat.npy'),
-                allow_pickle=True)
-            self.neur.iscell = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'iscell.npy'),
-                allow_pickle=True)
-        except Exception as e:
-            print('\tcould not load suite2p output:')
-            print(f'\t\t{e}')
+        self._init_suite2p()
 
         # align behavior and imaging data
         # ----------------------
-        print('\tcreating timestamps...')
-
-        if rec_type == 'trig_rew':
-            _t_start = self.beh.rew.t[0]
-            _t_end = (self.rec.shape[0]/self.samp_rate) + _t_start
-            self.rec_t = np.linspace(_t_start,
-                                     _t_end,
-                                     num=self.rec.shape[0])
-        elif rec_type == 'paqio':
-            self._aligner = Aligner_ImgBeh()
-            self._aligner.parse_img_rewechoes()
-            self._aligner.parse_beh_rewechoes()
-            self._aligner.compute_alignment()
-
-            _t_start = 0
-            _t_end = self.rec.shape[0]/self.samp_rate
-            self.rec_t = np.linspace(_t_start, _t_end, num=self.rec.shape[0])
-            self.rec_t = self._aligner.correct_img_data(self.rec_t)
-
-        # store a copy of rec_t in neur attribute for convenience
-        if hasattr(self, 'neur'):
-            self.neur.t = self.rec_t
+        self._init_timestamps(self.rec.shape[0], rec_type)
 
         # note the first and last stimulus/rew within recording bounds
         # ---------------
-        # stims
-        self.beh._stimrange = SimpleNamespace()
-        n_stims = self.beh.stim.t_start.shape[0]
-
-        _temp_first = 0
-        _temp_last = n_stims - 1
-        for ind_stim in range(n_stims):
-            if self.beh.stim.t_start[ind_stim] + 4 > self.rec_t[-1]:
-                _temp_last = ind_stim-1
-            if self.beh.stim.t_start[ind_stim] - 2 < self.rec_t[0]:
-                _temp_first = ind_stim+1
-
-        self.beh._stimrange.first = _temp_first
-        self.beh._stimrange.last = _temp_last
-
-        # rews
-        self.beh._rewrange = SimpleNamespace()
-        n_rews = self.beh.rew.t.shape[0]
-
-        _temp_first = 0
-        _temp_last = n_rews - 1
-        for ind_rew in range(n_rews):
-            if self.beh.rew.t[ind_rew] + 4 > self.rec_t[-1]:
-                _temp_last = ind_stim-1
-            if self.beh.rew.t[ind_rew] - 2 < self.rec_t[0]:
-                _temp_first = ind_stim+1
-
-        self.beh._rewrange.first = _temp_first
-        self.beh._rewrange.last = _temp_last
-
-        # if trial_end is manually specified, replace these attributes
-        if trial_end is not None:
-            self.beh._stimrange.last = trial_end
-            self.beh._rewrange.last = trial_end
+        self._init_stim_rew_range(trial_end=trial_end)
 
         # compute trial indices for each trtype
         # -------------------
@@ -346,6 +218,176 @@ class TwoPRec(object):
             for _idx in _inds:
                 self._trial_cond_map.setdefault(int(_idx), []).append(_cond)
         return
+
+    # ------------------------------------------------------------------
+    # Shared __init__ helpers (called by both TwoPRec and
+    # TwoPRec_DualColour.__init__)
+    # ------------------------------------------------------------------
+
+    def _init_folders(self, enclosing_folder, folder_beh, folder_img,
+                      dset_obj, dset_ind):
+        """Set up self.folder and self.path from explicit paths or a dataset
+        object, and chdir to the enclosing folder."""
+        self.folder = SimpleNamespace()
+        self.path = SimpleNamespace()
+        if dset_obj is None:
+            self.folder.enclosing = enclosing_folder
+            self.folder.img = folder_img
+            self.folder.beh = folder_beh
+            print(f'loading {self.folder.enclosing}...\n---------------')
+        elif 'DSetObj' in str(type(dset_obj)):
+            self.dset_obj = dset_obj
+            self.folder.enclosing = self.dset_obj.get_path_expref(dset_ind)
+            self.folder.img = self.dset_obj.get_path_img(dset_ind)
+            self.folder.beh = self.dset_obj.get_path_beh(dset_ind)
+            print(f'loading {self.dset_obj.get_path_expref(dset_ind)}...')
+            print('---------------')
+
+        self.path.raw = pathlib.Path(self.folder.enclosing)
+        self.path.animal = self.path.raw.parts[-2]
+        self.path.date = self.path.raw.parts[-1]
+        self.path.beh_folder = self.folder.beh
+
+        os.chdir(self.folder.enclosing)
+        check_folder_exists('figs_mbl')
+
+    def _init_ops(self, n_px_remove_sides, rec_type):
+        """Initialise self.ops namespace with operational parameters."""
+        self.ops = SimpleNamespace()
+        self.ops.n_px_remove_sides = n_px_remove_sides
+        self.ops.rec_type = rec_type
+
+    def _init_behavior(self, parse_stims=True, parse_by='stimulusOrientation'):
+        """Load behavioral data into self.beh from self.folder.beh.
+
+        Populates self.beh.rew, self.beh.stim, and self.beh.lick.
+        """
+        self.beh = BehDataSimpleLoad(self.folder.beh,
+                                     parse_stims=parse_stims,
+                                     parse_by=parse_by)
+
+        self.beh.rew = SimpleNamespace()
+        self.beh.stim = SimpleNamespace()
+
+        self.beh.rew.delivered = self.beh._data.get_event_var(
+            'isRewardGivenValues')
+        self.beh.rew.t = self.beh._data.get_event_var('totalRewardTimes')[
+            np.where(self.beh.rew.delivered == 1)[0]]
+
+        _daq_data = self.beh._timeline.get_daq_data()
+        self.beh.licks = find_event_onsets_autothresh(
+            _daq_data.sig['lickDetector'])
+        self.beh.t_licks = _daq_data.t[self.beh.licks]
+
+        self.beh.stim.t_start = self.beh._data.get_event_var(
+            'stimulusOnTimes')
+        self.beh.stim.stimlist = StimParser(self.beh, parse_by=parse_by)
+
+        self.beh.stim.prob = self.beh.stim.stimlist._all_stimprobs
+        self.beh.stim.size = self.beh.stim.stimlist._all_stimsizes
+
+        self.beh.lick = SimpleNamespace()
+
+        t_licksig = self.beh._daq_data.t
+        lick_onset_inds = find_event_onsets_autothresh(
+            self.beh._daq_data.sig['lickDetector'], n_stdevs=4)
+        self.beh.lick.t_raw = t_licksig[lick_onset_inds]
+
+    def _init_suite2p(self):
+        """Try to load suite2p output from self.folder.img into self.neur."""
+        print('\tloading suite2p neurs...')
+        try:
+            self.neur = SimpleNamespace()
+            self.neur.f = np.load(
+                os.path.join(self.folder.img,
+                             'suite2p', 'plane0', 'F.npy'),
+                allow_pickle=True)
+            self.neur.ops = np.load(
+                os.path.join(self.folder.img,
+                             'suite2p', 'plane0', 'ops.npy'),
+                allow_pickle=True)
+            self.neur.stat = np.load(
+                os.path.join(self.folder.img,
+                             'suite2p', 'plane0', 'stat.npy'),
+                allow_pickle=True)
+            self.neur.iscell = np.load(
+                os.path.join(self.folder.img,
+                             'suite2p', 'plane0', 'iscell.npy'),
+                allow_pickle=True)
+        except Exception as e:
+            print('\tcould not load suite2p output:')
+            print(f'\t\t{e}')
+
+    def _init_timestamps(self, n_frames, rec_type):
+        """Create self.rec_t timestamps and store in self.neur.t if available.
+
+        Parameters
+        ----------
+        n_frames : int
+            Number of frames in the recording (used to construct rec_t).
+        rec_type : str
+            'trig_rew' or 'paqio' — determines alignment method.
+        """
+        print('\tcreating timestamps...')
+        if rec_type == 'trig_rew':
+            _t_start = self.beh.rew.t[0]
+            _t_end = (n_frames / self.samp_rate) + _t_start
+            self.rec_t = np.linspace(_t_start, _t_end, num=n_frames)
+        elif rec_type == 'paqio':
+            self._aligner = Aligner_ImgBeh()
+            self._aligner.parse_img_rewechoes()
+            self._aligner.parse_beh_rewechoes()
+            self._aligner.compute_alignment()
+            _t_start = 0
+            _t_end = n_frames / self.samp_rate
+            self.rec_t = np.linspace(_t_start, _t_end, num=n_frames)
+            self.rec_t = self._aligner.correct_img_data(self.rec_t)
+
+        if hasattr(self, 'neur'):
+            self.neur.t = self.rec_t
+
+    def _init_stim_rew_range(self, trial_end=None):
+        """Compute self.beh._stimrange and self.beh._rewrange.
+
+        Finds the first and last stimulus/reward indices that fall within
+        the recording window. Optionally clips the last trial to trial_end.
+        """
+        # stims
+        self.beh._stimrange = SimpleNamespace()
+        n_stims = self.beh.stim.t_start.shape[0]
+
+        _temp_first = 0
+        _temp_last = n_stims - 1
+        for ind_stim in range(n_stims):
+            if self.beh.stim.t_start[ind_stim] + 4 > self.rec_t[-1]:
+                _temp_last = ind_stim - 1
+            if self.beh.stim.t_start[ind_stim] - 2 < self.rec_t[0]:
+                _temp_first = ind_stim + 1
+
+        self.beh._stimrange.first = _temp_first
+        self.beh._stimrange.last = _temp_last
+
+        # rews
+        self.beh._rewrange = SimpleNamespace()
+        n_rews = self.beh.rew.t.shape[0]
+
+        _temp_first = 0
+        _temp_last = n_rews - 1
+        for ind_rew in range(n_rews):
+            if self.beh.rew.t[ind_rew] + 4 > self.rec_t[-1]:
+                _temp_last = ind_stim - 1
+            if self.beh.rew.t[ind_rew] - 2 < self.rec_t[0]:
+                _temp_first = ind_stim + 1
+
+        self.beh._rewrange.first = _temp_first
+        self.beh._rewrange.last = _temp_last
+
+        # if trial_end is manually specified, replace these attributes
+        if trial_end is not None:
+            self.beh._stimrange.last = trial_end
+            self.beh._rewrange.last = trial_end
+
+    # ------------------------------------------------------------------
 
     def add_lickrates(self, t_prestim=2,
                       t_poststim=5,
@@ -3623,38 +3665,15 @@ class TwoPRec_DualColour(TwoPRec):
         - Green channel (typically Ch2) -> self.rec_grn
         """
 
-        # setup names of folders and files
+        # setup names of folders, files, and ops
         # --------------
-        self.folder = SimpleNamespace()
-        self.path = SimpleNamespace()
-        if dset_obj is None:
-            self.folder.enclosing = enclosing_folder
-            self.folder.img = folder_img
-            self.folder.beh = folder_beh
-            print(f'loading {self.folder.enclosing}...\n---------------')
-
-        elif 'DSetObj' in str(type(dset_obj)):
-            self.dset_obj = dset_obj
-            self.folder.enclosing = self.dset_obj.get_path_expref(dset_ind)
-            self.folder.img = self.dset_obj.get_path_img(dset_ind)
-            self.folder.beh = self.dset_obj.get_path_beh(dset_ind)
-            print(f'loading {self.dset_obj.get_path_expref(dset_ind)}...')
-            print('---------------')
-
-        self.path.raw = pathlib.Path(self.folder.enclosing)
-        self.path.animal = self.path.raw.parts[-2]
-        self.path.date = self.path.raw.parts[-1]
-        self.path.beh_folder = self.folder.beh
+        self._init_folders(enclosing_folder, folder_beh, folder_img,
+                           dset_obj, dset_ind)
         self.ch_img_red = ch_img_red
         self.ch_img_grn = ch_img_grn
         # Keep ch_img for backwards compatibility (defaults to green)
         self.ch_img = ch_img_grn
-
-        os.chdir(self.folder.enclosing)
-        check_folder_exists('figs_mbl')  # to store all figs
-        self.ops = SimpleNamespace()
-        self.ops.n_px_remove_sides = n_px_remove_sides
-        self.ops.rec_type = rec_type
+        self._init_ops(n_px_remove_sides, rec_type)
 
         # get filenames of images for both channels
         list_img = os.listdir(self.folder.img)
@@ -3685,37 +3704,9 @@ class TwoPRec_DualColour(TwoPRec):
         # Keep fname_img for backwards compatibility (defaults to green)
         self.fname_img = self.fname_img_grn
 
-        # load behavioral data
+        # load behavioral data (DualColour always uses parse_stims=False)
         # -------------
-        self.beh = BehDataSimpleLoad(self.folder.beh, parse_stims=False)
-
-        self.beh.rew = SimpleNamespace()
-        self.beh.stim = SimpleNamespace()
-
-        self.beh.rew.delivered = self.beh._data.get_event_var(
-            'isRewardGivenValues')
-
-        self.beh.rew.t = self.beh._data.get_event_var('totalRewardTimes')[
-            np.where(self.beh.rew.delivered == 1)[0]]
-
-        _daq_data = self.beh._timeline.get_daq_data()
-        self.beh.licks = find_event_onsets_autothresh(
-            _daq_data.sig['lickDetector'])
-        self.beh.t_licks = _daq_data.t[self.beh.licks]
-
-        self.beh.stim.t_start = self.beh._data.get_event_var(
-            'stimulusOnTimes')
-        self.beh.stim.stimlist = StimParser(self.beh)
-
-        self.beh.stim.prob = self.beh.stim.stimlist._all_stimprobs
-        self.beh.stim.size = self.beh.stim.stimlist._all_stimsizes
-
-        self.beh.lick = SimpleNamespace()
-
-        t_licksig = self.beh._daq_data.t
-        lick_onset_inds = find_event_onsets_autothresh(
-            self.beh._daq_data.sig['lickDetector'], n_stdevs=4)
-        self.beh.lick.t_raw = t_licksig[lick_onset_inds]
+        self._init_behavior(parse_stims=False)
 
         # load imaging data - BOTH CHANNELS
         # ------------
@@ -3756,92 +3747,16 @@ class TwoPRec_DualColour(TwoPRec):
         self.rec = self.rec_grn
 
         # try to load suite2p output if available
-        print('\tloading suite2p neurs...')
-        try:
-            self.neur = SimpleNamespace()
-            self.neur.f = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'F.npy'),
-                allow_pickle=True)
-            self.neur.ops = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'ops.npy'),
-                allow_pickle=True)
-            self.neur.stat = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'stat.npy'),
-                allow_pickle=True)
-            self.neur.iscell = np.load(
-                os.path.join(self.folder.img,
-                             'suite2p', 'plane0', 'iscell.npy'),
-                allow_pickle=True)
-        except Exception as e:
-            print('\tcould not load suite2p output:')
-            print(f'\t\t{e}')
+        self._init_suite2p()
 
         # align behavior and imaging data
         # ----------------------
-        print('\tcreating timestamps...')
-
-        if rec_type == 'trig_rew':
-            _t_start = self.beh.rew.t[0]
-            _t_end = (self.rec_grn.shape[0]/self.samp_rate) + _t_start
-            self.rec_t = np.linspace(_t_start,
-                                     _t_end,
-                                     num=self.rec_grn.shape[0])
-        elif rec_type == 'paqio':
-            self._aligner = Aligner_ImgBeh()
-            self._aligner.parse_img_rewechoes()
-            self._aligner.parse_beh_rewechoes()
-            self._aligner.compute_alignment()
-
-            _t_start = 0
-            _t_end = self.rec_grn.shape[0]/self.samp_rate
-            self.rec_t = np.linspace(_t_start, _t_end,
-                                     num=self.rec_grn.shape[0])
-            self.rec_t = self._aligner.correct_img_data(self.rec_t)
-
-        # store a copy of rec_t in neur attribute for convenience
-        if hasattr(self, 'neur'):
-            self.neur.t = self.rec_t
+        self._init_timestamps(self.rec_grn.shape[0], rec_type)
 
         # note the first and last stimulus/rew within recording bounds
         # ---------------
-        # stims
-        self.beh._stimrange = SimpleNamespace()
-        n_stims = self.beh.stim.t_start.shape[0]
-
-        _temp_first = 0
-        _temp_last = n_stims - 1
-        for ind_stim in range(n_stims):
-            if self.beh.stim.t_start[ind_stim] + 4 > self.rec_t[-1]:
-                _temp_last = ind_stim-1
-            if self.beh.stim.t_start[ind_stim] - 2 < self.rec_t[0]:
-                _temp_first = ind_stim+1
-
-        self.beh._stimrange.first = _temp_first
-        self.beh._stimrange.last = _temp_last
-
-        # rews
-        self.beh._rewrange = SimpleNamespace()
-        n_rews = self.beh.rew.t.shape[0]
-
-        _temp_first = 0
-        _temp_last = n_rews - 1
-        for ind_rew in range(n_rews):
-            if self.beh.rew.t[ind_rew] + 4 > self.rec_t[-1]:
-                _temp_last = ind_stim-1
-            if self.beh.rew.t[ind_rew] - 2 < self.rec_t[0]:
-                _temp_first = ind_stim+1
-
-        self.beh._rewrange.first = _temp_first
-        self.beh._rewrange.last = _temp_last
-
-        # if trial_end is manually specified, replace these attributes
         self.trial_end = trial_end
-        if trial_end is not None:
-            self.beh._stimrange.last = trial_end
-            self.beh._rewrange.last = trial_end
+        self._init_stim_rew_range(trial_end=trial_end)
 
         # compute trial indices for each trtype
         # -------------------
