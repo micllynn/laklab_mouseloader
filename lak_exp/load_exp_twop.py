@@ -2288,7 +2288,7 @@ class TwoPRec(object):
 
         else:
             _cmap = sns.cubehelix_palette(
-                as_cmap=True, start=2, rot=0, dark=0.1, light=0.6)
+                as_cmap=True, start=2, rot=0, dark=0.1, light=0.6).reversed()
             _outcomes = self.beh.tr_conds_outcome
             _max_outcome = np.max(_outcomes)
             colors = {str(p): _cmap(_outcomes[i] / _max_outcome)
@@ -2893,7 +2893,7 @@ class TwoPRec(object):
                         value in self.beh.tr_conds_outcome.
         """
         # plot neuron masks
-        self.plt_neur_masks()
+        self.plt_neur_masks(show=False)
 
         self.add_lickrates(t_prestim=t_pre,
                            t_poststim=t_post)
@@ -3243,7 +3243,8 @@ class TwoPRec(object):
             _ind_zero = np.argmin(np.abs(self.neur.t_aln))
             _ind_rew = np.argmin(np.abs(self.neur.t_aln - 2))
 
-            for _ax, _tr_cond in zip(axes, _tr_conds):
+            for _ax, _tr_cond, _tr_cond_outcome in zip(
+                    axes, _tr_conds, self.beh.tr_conds_outcome):
                 _ax.pcolormesh(
                     self.neur.dff_aln_mean[_tr_cond][sort_inds_corr],
                     vmin=plt_vmin, vmax=plt_vmax,
@@ -3260,15 +3261,63 @@ class TwoPRec(object):
                     ticks=[0, _ind_zero, self.neur.t_aln.shape[-1]],
                     labels=[f'{self.neur.t_aln[0]:.2f}', 0,
                             f'{self.neur.t_aln[-1]:.2f}'])
-                _ax.set_title(f'{self.beh._stimparser.parse_by}={_tr_cond}')
+                _ax.set_title(
+                    f'{self.beh._stimparser.parse_by}={_tr_cond}'
+                    f'\nOutcome: {_tr_cond_outcome}uL')
             axes[0].set_ylabel('neuron')
             axes[n_conds // 2].set_xlabel('time from stim (s)')
 
+
+            # second figure: population-averaged trace per trial condition
+            # -------------------------------------------------------------
+            _cmap = sns.cubehelix_palette(
+                as_cmap=True, start=2, rot=0, dark=0.1, light=0.6).reversed()
+            _max_outcome = np.max(self.beh.tr_conds_outcome)
+            _tr_colors = {
+                str(p): _cmap(self.beh.tr_conds_outcome[i] / _max_outcome)
+                for i, p in enumerate(self.beh._stimparser.parsed_param)}
+
+            fig_pop, ax_pop = plt.subplots(1, 1, figsize=(3.43, 2))
+
+            for _tr_cond, _tr_cond_outcome in zip(
+                    _tr_conds, self.beh.tr_conds_outcome):
+                _color = _tr_colors[_tr_cond]
+                _mean_pop = np.mean(
+                    self.neur.dff_aln_mean[_tr_cond], axis=0)
+                _sem_pop = (np.std(
+                    self.neur.dff_aln_mean[_tr_cond], axis=0)
+                    / np.sqrt(n_neurs))
+                ax_pop.plot(
+                    self.neur.t_aln, _mean_pop,
+                    color=_color,
+                    label=f'{_tr_cond} ({_tr_cond_outcome}uL)')
+                ax_pop.fill_between(
+                    self.neur.t_aln,
+                    _mean_pop - _sem_pop,
+                    _mean_pop + _sem_pop,
+                    facecolor=_color,
+                    alpha=0.2)
+
+            ax_pop.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
+                           linewidth=1.5, alpha=0.8, label='stim')
+            ax_pop.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
+                           linewidth=1.5, alpha=0.8, label='reward')
+            ax_pop.legend(title=f'{self.beh._stimparser.parse_by} (outcome)')
+            ax_pop.set_xlabel('time from stim (s)')
+            ax_pop.set_ylabel('mean df/f')
+
+            # Save and show figures
+            # ---------------
             fig.savefig(os.path.join(
                 os.getcwd(), 'figs_mbl',
                 f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
                 + f'{t_pre=}_{t_post=}_{zscore=}_{plt_equal=}_'
                 + 'neur_trial_activity.pdf'))
+            fig_pop.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{t_pre=}_{t_post=}_{zscore=}_'
+                + 'neur_popmean_activity.pdf'))
 
             plt.show()
 
@@ -4052,8 +4101,7 @@ class TwoPRec(object):
         fig.savefig(f'{savefig_prefix}_lick_resp_{t_pre=}_{t_post=}.pdf')
         plt.show()
 
-
-    def plt_neur_masks(self):
+    def plt_neur_masks(self, show=True):
         """Plot an image of all neuron masks from suite2p output."""
         if not hasattr(self, 'neur'):
             self.add_neurs()
@@ -4079,7 +4127,8 @@ class TwoPRec(object):
             + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}'
             + '.pdf'))
 
-        plt.show()
+        if show:
+            plt.show()
 
 
 class TwoPRec_DualColour(TwoPRec):
@@ -4535,14 +4584,18 @@ class TwoPRec_DualColour(TwoPRec):
         self.frame.t = np.linspace(-1*t_pre, 2+t_post,
                                    n_frames_tot)
 
+        # Pre-compute spatial mean over the entire recording in one sequential
+        # pass so per-trial extraction becomes a cheap 1D slice.
+        print('\tpre-computing spatial mean...')
+        rec_spatial_mean = rec.reshape(rec.shape[0], -1).mean(axis=1)
+
         # Auto-detect near-zero baseline (corrected residual signal) and fall
         # back to z-score with a warning rather than dividing by ~0.
         _use_zscore = use_zscore
         if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
             _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
-            _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
-            _probe = np.mean(np.mean(
-                rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
+            _ind0 = np.searchsorted(rec_t, _t0 - t_pre)
+            _probe = rec_spatial_mean[_ind0:_ind0 + n_frames_pre]
             _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
             if np.abs(_f0_probe) < 1.0:
                 print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
@@ -4551,26 +4604,22 @@ class TwoPRec_DualColour(TwoPRec):
                       'to suppress this check.')
                 _use_zscore = True
 
+        # Pre-compute per-trial start indices in one vectorized pass.
+        _trials = np.arange(self.beh._stimrange.first,
+                            self.beh._stimrange.last)
+        _all_ind_t_start = np.searchsorted(
+            rec_t, self.beh.stim.t_start[_trials] - t_pre)
+
         # store stim-aligned trace
         self.frame.tr_counts = {'0': 0, '0.5': 0, '1': 0,
                                 '0.5_rew': 0, '0.5_norew': 0,
                                 '0.5_prelick': 0, '0.5_noprelick': 0}
-        for trial in range(self.beh._stimrange.first,
-                           self.beh._stimrange.last):
+        for _i, trial in enumerate(_trials):
             print(f'\t{trial=}', end='\r')
-            _t_stim = self.beh.stim.t_start[trial]
-            _t_start = _t_stim - t_pre
-            _t_end = self.beh._data.get_event_var(
-                'totalRewardTimes')[trial] + t_post
+            _ind_t_start = _all_ind_t_start[_i]
 
-            _ind_t_start = np.argmin(np.abs(
-                rec_t - _t_start))
-            _ind_t_end = np.argmin(np.abs(
-                rec_t - _t_end)) + 1  # add frames to end
-
-            # extract fluorescence
-            _f = np.mean(np.mean(
-                rec[_ind_t_start:_ind_t_end, :, :], axis=1), axis=1)
+            # extract fluorescence (cheap 1D slice of pre-computed mean)
+            _f = rec_spatial_mean[_ind_t_start:_ind_t_start + n_frames_tot]
             if _use_zscore:
                 _baseline = _f[:n_frames_pre]
                 _sigma = np.std(_baseline)
