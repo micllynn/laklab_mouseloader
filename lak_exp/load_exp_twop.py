@@ -39,6 +39,7 @@ class TwoPRec(object):
                  rec_type='trig_rew',
                  parse_stims=True,
                  parse_by='stimulusOrientation',
+                 trial_conditions=None,
                  n_px_remove_sides=10):
         """
         Loads a 2p recording (tiff) and associated behavioral folder.
@@ -338,6 +339,12 @@ class TwoPRec(object):
             # add lickrates
             # ----------------
             self.add_lickrates()
+
+        # build _trial_cond_map: maps each trial index -> list of condition keys
+        self._trial_cond_map = {}
+        for _cond, _inds in self.beh.tr_inds.items():
+            for _idx in _inds:
+                self._trial_cond_map.setdefault(int(_idx), []).append(_cond)
         return
 
     def add_lickrates(self, t_prestim=2,
@@ -435,135 +442,28 @@ class TwoPRec(object):
         n_frames_post = int((2 + t_post) * self.samp_rate)
         n_frames_tot = n_frames_pre + n_frames_post
 
-        # if parsing by stimulusOrientation (visual stims, 5HTCtx)
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
+        self.frame.dff = {}
+        for _cond in self.beh.tr_inds:
+            self.frame.dff[_cond] = np.zeros((
+                self.beh.tr_inds[_cond].shape[0], n_frames_tot))
+        self.frame.t = np.linspace(-1*t_pre, 2+t_post, n_frames_tot)
+        self.frame.tr_counts = {k: 0 for k in self.beh.tr_inds}
 
-            self.frame.dff = {}
-            self.frame.dff['0'] = np.zeros((
-                self.beh.tr_inds['0'].shape[0], n_frames_tot))
-            self.frame.dff['0.5'] = np.zeros((
-                self.beh.tr_inds['0.5'].shape[0], n_frames_tot))
-            self.frame.dff['1'] = np.zeros((
-                self.beh.tr_inds['1'].shape[0], n_frames_tot))
-
-            self.frame.dff['0.5_rew'] = np.zeros((
-                self.beh.tr_inds['0.5_rew'].shape[0], n_frames_tot))
-            self.frame.dff['0.5_norew'] = np.zeros((
-                self.beh.tr_inds['0.5_norew'].shape[0], n_frames_tot))
-            self.frame.dff['0.5_prelick'] = np.zeros((
-                self.beh.tr_inds['0.5_prelick'].shape[0], n_frames_tot))
-            self.frame.dff['0.5_noprelick'] = np.zeros((
-                self.beh.tr_inds['0.5_noprelick'].shape[0], n_frames_tot))
-
-            self.frame.t = np.linspace(-1*t_pre, 2+t_post,
-                                       n_frames_tot)
-
-            # store stim-aligned trace
-            self.frame.tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                                    '0.5_rew': 0, '0.5_norew': 0,
-                                    '0.5_prelick': 0, '0.5_noprelick': 0}
-            for trial in range(self.beh._stimrange.first,
-                               self.beh._stimrange.last):
-                print(f'\t{trial=}', end='\r')
-                _t_stim = self.beh.stim.t_start[trial]
-                _t_start = _t_stim - t_pre
-                _t_end = self.beh._data.get_event_var(
-                    'totalRewardTimes')[trial] + t_post
-
-                _ind_t_start = np.argmin(np.abs(
-                    self.rec_t - _t_start))
-                _ind_t_end = np.argmin(np.abs(
-                    self.rec_t - _t_end)) + 1  # add frames to end
-
-                # extract fluorescence
-                _f = np.mean(np.mean(
-                    self.rec[_ind_t_start:_ind_t_end, :, :], axis=1), axis=1)
-                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                if self.beh.stim.prob[trial] == 0:
-                    self.frame.dff['0'][
-                        self.frame.tr_counts['0'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0'] += 1
-                elif self.beh.stim.prob[trial] == 0.5:
-                    self.frame.dff['0.5'][
-                        self.frame.tr_counts['0.5'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5'] += 1
-                elif self.beh.stim.prob[trial] == 1:
-                    self.frame.dff['1'][
-                        self.frame.tr_counts['1'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['1'] += 1
-
-                if self.beh.stim.prob[trial] == 0.5 \
-                   and self.beh.rew.delivered[trial] == 1:
-                    self.frame.dff['0.5_rew'][
-                        self.frame.tr_counts['0.5_rew'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_rew'] += 1
-                elif self.beh.stim.prob[trial] == 0.5 \
-                     and self.beh.rew.delivered[trial] == 0:
-                    self.frame.dff['0.5_norew'][
-                        self.frame.tr_counts['0.5_norew'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_norew'] += 1
-
-                if self.beh.stim.prob[trial] == 0.5 \
-                   and self.beh.lick.antic_raw[trial] > 0:
-                    self.frame.dff['0.5_prelick'][
-                        self.frame.tr_counts['0.5_prelick'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_prelick'] += 1
-                elif self.beh.stim.prob[trial] == 0.5 \
-                     and self.beh.lick.antic_raw[trial] == 0:
-                    self.frame.dff['0.5_noprelick'][
-                        self.frame.tr_counts['0.5_noprelick'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_noprelick'] += 1
-
-        # if not parsing by stimulusOrientation (special case):
-        else:
-            _tr_conds = self.beh.tr_conds
-            _all_trs_cond = self.beh._stimparser._all_parsed_param
-
-            self.frame.dff = {}
-
-            for _tr_cond in _tr_conds:
-                self.frame.dff[_tr_cond] = np.zeros((
-                    self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
-
-            self.frame.t = np.linspace(-1*t_pre, 2+t_post,
-                                       n_frames_tot)
-
-            # store stim-aligned trace
-            self.frame.tr_counts = {k: 0 for k in _tr_conds}
-
-            for trial in range(self.beh._stimrange.first,
-                               self.beh._stimrange.last):
-                print(f'\t{trial=}', end='\r')
-                _t_stim = self.beh.stim.t_start[trial]
-                _t_start = _t_stim - t_pre
-                _t_end = self.beh._data.get_event_var(
-                    'totalRewardTimes')[trial] + t_post
-
-                _ind_t_start = np.argmin(np.abs(
-                    self.rec_t - _t_start))
-                _ind_t_end = np.argmin(np.abs(
-                    self.rec_t - _t_end)) + 1  # add frames to end
-
-                # extract fluorescence
-                _f = np.mean(np.mean(
-                    self.rec[_ind_t_start:_ind_t_end, :, :], axis=1), axis=1)
-                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                # save in self.frame.dff for the correct tr_cond
-                for _tr_cond in _tr_conds:
-                    if _all_trs_cond[trial] == int(_tr_cond):
-                        self.frame.dff[_tr_cond][
-                            self.frame.tr_counts[_tr_cond], :] \
-                            = _dff[0:n_frames_tot]
-                        self.frame.tr_counts[_tr_cond] += 1
+        _trials = np.arange(self.beh._stimrange.first, self.beh._stimrange.last)
+        _all_ind_t_start = np.searchsorted(
+            self.rec_t, self.beh.stim.t_start[_trials] - t_pre)
+        for _i, trial in enumerate(_trials):
+            print(f'\t{trial=}', end='\r')
+            _ind_t_start = _all_ind_t_start[_i]
+            _f = np.mean(np.mean(
+                self.rec[_ind_t_start:_ind_t_start + n_frames_tot, :, :],
+                axis=1), axis=1)
+            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+            for _cond in self._trial_cond_map.get(int(trial), []):
+                if _cond in self.frame.dff:
+                    self.frame.dff[_cond][
+                        self.frame.tr_counts[_cond], :] = _dff[0:n_frames_tot]
+                    self.frame.tr_counts[_cond] += 1
 
     def add_sectors(self,
                     n_sectors=10,
@@ -942,195 +842,66 @@ class TwoPRec(object):
         n_frames_post = int((2 + t_post) * self.samp_rate)
         n_frames_tot = n_frames_pre + n_frames_post
 
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
+        _tr_conds = list(self.beh.tr_inds.keys())
 
-            self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
-            self.neur.dff_aln_mean = {}
-            for tr_type in ['0', '0.5', '1', '0.5_rew',
-                            '0.5_norew', '0.5_prelick',
-                            '0.5_noprelick']:
-                self.neur.dff_aln_mean[tr_type] = np.zeros(
-                    (n_neurs, n_frames_tot))
-            self.neur.x = np.zeros(n_neurs)
-            self.neur.y = np.zeros(n_neurs)
+        self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
+        self.neur.dff_aln_mean = {}
+        for _tr_cond in _tr_conds:
+            self.neur.dff_aln_mean[_tr_cond] = np.zeros(
+                (n_neurs, n_frames_tot))
+        self.neur.x = np.zeros(n_neurs)
+        self.neur.y = np.zeros(n_neurs)
 
-            self.neur.t_aln = np.linspace(
-                -1*t_pre, 2+t_post, n_frames_tot)
+        self.neur.t_aln = np.linspace(
+            -1*t_pre, 2+t_post, n_frames_tot)
 
-            # iterate through trials
-            # ----------------
-            for ind, neur in enumerate(neurs):
-                print(f'\tneur={int(neur)}', end='\r')
-                # extract x/y locations
-                self.neur.x[ind] = self.neur.stat[neur]['med'][0]
-                self.neur.y[ind] = self.neur.stat[neur]['med'][1]
-                # correct for image crop
-                self.neur.x[ind] -= self.ops.n_px_remove_sides
-                self.neur.y[ind] -= self.ops.n_px_remove_sides
+        # iterate through neurons
+        # ----------------
+        for ind, neur in enumerate(neurs):
+            print(f'\tneur={int(neur)}', end='\r')
+            # extract x/y locations
+            self.neur.x[ind] = self.neur.stat[neur]['med'][0]
+            self.neur.y[ind] = self.neur.stat[neur]['med'][1]
+            # correct for image crop
+            self.neur.x[ind] -= self.ops.n_px_remove_sides
+            self.neur.y[ind] -= self.ops.n_px_remove_sides
 
-                # setup structure
-                # -------------
-                self.neur.dff_aln[ind] = {}
-                self.neur.dff_aln[ind]['0'] = np.zeros((
-                    self.beh.tr_inds['0'].shape[0], n_frames_tot))
-                self.neur.dff_aln[ind]['0.5'] = np.zeros((
-                    self.beh.tr_inds['0.5'].shape[0], n_frames_tot))
-                self.neur.dff_aln[ind]['1'] = np.zeros((
-                    self.beh.tr_inds['1'].shape[0], n_frames_tot))
-
-                self.neur.dff_aln[ind]['0.5_rew'] = np.zeros((
-                    self.beh.tr_inds['0.5_rew'].shape[0], n_frames_tot))
-                self.neur.dff_aln[ind]['0.5_norew'] = np.zeros((
-                    self.beh.tr_inds['0.5_norew'].shape[0], n_frames_tot))
-
-                self.neur.dff_aln[ind]['0.5_prelick'] = np.zeros((
-                    self.beh.tr_inds['0.5_prelick'].shape[0],
-                    n_frames_tot))
-                self.neur.dff_aln[ind]['0.5_noprelick'] = np.zeros((
-                    self.beh.tr_inds['0.5_noprelick'].shape[0],
-                    n_frames_tot))
-
-                self.neur.dff_aln_mean[ind] = {}
-
-                _tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                              '0.5_rew': 0, '0.5_norew': 0,
-                              '0.5_prelick': 0,
-                              '0.5_noprelick': 0}
-
-                # extract fluorescence for each trial
-                # -------------
-                for trial in range(self.beh._stimrange.first,
-                                   self.beh._stimrange.last):
-                    _t_stim = self.beh.stim.t_start[trial]
-                    _t_start = _t_stim - t_pre
-                    _t_end = self.beh._data.get_event_var(
-                        'totalRewardTimes')[trial] + t_post
-
-                    _ind_t_start = np.argmin(np.abs(
-                        self.neur.t - _t_start))
-                    _ind_t_end = np.argmin(np.abs(
-                        self.neur.t - _t_end)) + 2   # add frames to end
-
-                    if zscore is True:
-                        _f = sp.stats.zscore(self.neur.f[neur, :])[
-                            _ind_t_start:_ind_t_end]
-                    elif zscore is False:
-                        _f = self.neur.f[neur, _ind_t_start:_ind_t_end]
-                    _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                    if self.beh.stim.prob[trial] == 0:
-                        self.neur.dff_aln[ind]['0'][_tr_counts['0'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5:
-                        self.neur.dff_aln[ind]['0.5'][_tr_counts['0.5'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5'] += 1
-                    elif self.beh.stim.prob[trial] == 1:
-                        self.neur.dff_aln[ind]['1'][_tr_counts['1'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['1'] += 1
-
-                    if self.beh.stim.prob[trial] == 0.5 \
-                       and self.beh.rew.delivered[trial] == 1:
-                        self.neur.dff_aln[ind]['0.5_rew'][
-                            _tr_counts['0.5_rew'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_rew'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5 \
-                         and self.beh.rew.delivered[trial] == 0:
-                        self.neur.dff_aln[ind]['0.5_norew'][
-                            _tr_counts['0.5_norew'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_norew'] += 1
-
-                    if self.beh.stim.prob[trial] == 0.5 \
-                       and self.beh.lick.antic_raw[trial] > 0:
-                        self.neur.dff_aln[ind]['0.5_prelick'][
-                            _tr_counts['0.5_prelick'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_prelick'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5 \
-                         and self.beh.lick.antic_raw[trial] == 0:
-                        self.neur.dff_aln[ind]['0.5_noprelick'][
-                            _tr_counts['0.5_noprelick'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_noprelick'] += 1
-
-                for tr_type in ['0', '0.5', '1', '0.5_rew',
-                                '0.5_norew', '0.5_prelick',
-                                '0.5_noprelick']:
-                    self.neur.dff_aln_mean[tr_type][ind, :] = \
-                        np.mean(self.neur.dff_aln[ind][tr_type], axis=0)
-
-        # if not parsing by stimulusOrientation (special case):
-        else:
-            _tr_conds = self.beh.tr_conds
-            _all_trs_cond = self.beh._stimparser._all_parsed_param
-
-            self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
-            self.neur.dff_aln_mean = {}
+            # setup structure
+            # -------------
+            self.neur.dff_aln[ind] = {}
             for _tr_cond in _tr_conds:
-                self.neur.dff_aln_mean[_tr_cond] = np.zeros(
-                    (n_neurs, n_frames_tot))
-            self.neur.x = np.zeros(n_neurs)
-            self.neur.y = np.zeros(n_neurs)
+                self.neur.dff_aln[ind][_tr_cond] = np.zeros((
+                    self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
 
-            self.neur.t_aln = np.linspace(
-                -1*t_pre, 2+t_post, n_frames_tot)
+            _tr_counts = {k: 0 for k in _tr_conds}
 
-            # iterate through trials
-            # ----------------
-            for ind, neur in enumerate(neurs):
-                print(f'\tneur={int(neur)}', end='\r')
-                # extract x/y locations
-                self.neur.x[ind] = self.neur.stat[neur]['med'][0]
-                self.neur.y[ind] = self.neur.stat[neur]['med'][1]
-                # correct for image crop
-                self.neur.x[ind] -= self.ops.n_px_remove_sides
-                self.neur.y[ind] -= self.ops.n_px_remove_sides
+            # extract fluorescence for each trial
+            # -------------
+            if zscore is True:
+                _f_full = sp.stats.zscore(self.neur.f[neur, :])
+            else:
+                _f_full = self.neur.f[neur, :]
 
-                # setup structure
-                # -------------
-                self.neur.dff_aln[ind] = {}
-                for _tr_cond in _tr_conds:
-                    self.neur.dff_aln[ind][_tr_cond] = np.zeros((
-                        self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
+            for trial in range(self.beh._stimrange.first,
+                               self.beh._stimrange.last):
+                _t_stim = self.beh.stim.t_start[trial]
+                _t_start = _t_stim - t_pre
 
-                _tr_counts = {k: 0 for k in _tr_conds}
+                _ind_t_start = np.argmin(np.abs(
+                    self.neur.t - _t_start))
 
-                # extract fluorescence for each trial
-                # -------------
-                for trial in range(self.beh._stimrange.first,
-                                   self.beh._stimrange.last):
-                    _t_stim = self.beh.stim.t_start[trial]
-                    _t_start = _t_stim - t_pre
-                    _t_end = self.beh._data.get_event_var(
-                        'totalRewardTimes')[trial] + t_post
+                _f = _f_full[_ind_t_start:_ind_t_start + n_frames_tot]
+                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
 
-                    _ind_t_start = np.argmin(np.abs(
-                        self.neur.t - _t_start))
-                    _ind_t_end = np.argmin(np.abs(
-                        self.neur.t - _t_end)) + 2   # add frames to end
+                for _cond in self._trial_cond_map.get(int(trial), []):
+                    if _cond in self.neur.dff_aln[ind]:
+                        self.neur.dff_aln[ind][_cond][
+                            _tr_counts[_cond], :] = _dff[0:n_frames_tot]
+                        _tr_counts[_cond] += 1
 
-                    if zscore is True:
-                        _f = sp.stats.zscore(self.neur.f[neur, :])[
-                            _ind_t_start:_ind_t_end]
-                    elif zscore is False:
-                        _f = self.neur.f[neur, _ind_t_start:_ind_t_end]
-                    _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                    # save in self.neur.dff_aln for the correct tr_cond
-                    for _tr_cond in _tr_conds:
-                        if _all_trs_cond[trial] == int(_tr_cond):
-                            self.neur.dff_aln[ind][_tr_cond][
-                                _tr_counts[_tr_cond], :] \
-                                = _dff[0:n_frames_tot]
-                            _tr_counts[_tr_cond] += 1
-
-                for _tr_cond in _tr_conds:
-                    self.neur.dff_aln_mean[_tr_cond][ind, :] = \
-                        np.mean(self.neur.dff_aln[ind][_tr_cond], axis=0)
+            for _tr_cond in _tr_conds:
+                self.neur.dff_aln_mean[_tr_cond][ind, :] = \
+                    np.mean(self.neur.dff_aln[ind][_tr_cond], axis=0)
 
         print('')
         return
@@ -2146,230 +1917,92 @@ class TwoPRec(object):
         n_frames_post = int((2 + t_post) * self.samp_rate)
         n_frames_tot = n_frames_pre + n_frames_post
 
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
-            colors = {'0': colors[0],
-                      '0.5': colors[1],
-                      '1': colors[2],
-                      '0.5_rew': colors[1],
-                      '0.5_norew': colors[1],
-                      '0.5_prelick': colors[1],
-                      '0.5_noprelick': colors[1]}
-            linestyles = {'0': 'solid',
-                          '0.5': 'solid',
-                          '1': 'solid',
-                          '0.5_rew': 'solid',
-                          '0.5_norew': 'dashed',
-                          '0.5_prelick': 'solid',
-                          '0.5_noprelick': 'dashed'}
-
-            self.frame.dff = {}
-            self.frame.dff['0'] = np.zeros((
-                self.beh.tr_inds['0'].shape[0], n_frames_tot))
-            self.frame.dff['0.5'] = np.zeros((
-                self.beh.tr_inds['0.5'].shape[0], n_frames_tot))
-            self.frame.dff['1'] = np.zeros((
-                self.beh.tr_inds['1'].shape[0], n_frames_tot))
-
-            self.frame.dff['0.5_rew'] = np.zeros((
-                self.beh.tr_inds['0.5_rew'].shape[0], n_frames_tot))
-            self.frame.dff['0.5_norew'] = np.zeros((
-                self.beh.tr_inds['0.5_norew'].shape[0], n_frames_tot))
-            self.frame.dff['0.5_prelick'] = np.zeros((
-                self.beh.tr_inds['0.5_prelick'].shape[0], n_frames_tot))
-            self.frame.dff['0.5_noprelick'] = np.zeros((
-                self.beh.tr_inds['0.5_noprelick'].shape[0], n_frames_tot))
-
-            self.frame.t = np.linspace(-1*t_pre, 2+t_post,
-                                       n_frames_tot)
-
-            # store stim-aligned trace
-            self.frame.tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                                    '0.5_rew': 0, '0.5_norew': 0,
-                                    '0.5_prelick': 0, '0.5_noprelick': 0}
-            for trial in range(self.beh._stimrange.first,
-                               self.beh._stimrange.last):
-                print(f'\t{trial=}', end='\r')
-                _t_stim = self.beh.stim.t_start[trial]
-                _t_start = _t_stim - t_pre
-                _t_end = self.beh._data.get_event_var(
-                    'totalRewardTimes')[trial] + t_post
-
-                _ind_t_start = np.argmin(np.abs(
-                    self.rec_t - _t_start))
-                _ind_t_end = np.argmin(np.abs(
-                    self.rec_t - _t_end)) + 1  # add frames to end
-
-                # extract fluorescence
-                _f = np.mean(np.mean(
-                    self.rec[_ind_t_start:_ind_t_end, :, :], axis=1), axis=1)
-                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                if self.beh.stim.prob[trial] == 0:
-                    self.frame.dff['0'][
-                        self.frame.tr_counts['0'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0'] += 1
-                elif self.beh.stim.prob[trial] == 0.5:
-                    self.frame.dff['0.5'][
-                        self.frame.tr_counts['0.5'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5'] += 1
-                elif self.beh.stim.prob[trial] == 1:
-                    self.frame.dff['1'][
-                        self.frame.tr_counts['1'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['1'] += 1
-
-                if self.beh.stim.prob[trial] == 0.5 \
-                   and self.beh.rew.delivered[trial] == 1:
-                    self.frame.dff['0.5_rew'][
-                        self.frame.tr_counts['0.5_rew'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_rew'] += 1
-                elif self.beh.stim.prob[trial] == 0.5 \
-                     and self.beh.rew.delivered[trial] == 0:
-                    self.frame.dff['0.5_norew'][
-                        self.frame.tr_counts['0.5_norew'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_norew'] += 1
-
-                if self.beh.stim.prob[trial] == 0.5 \
-                   and self.beh.lick.antic_raw[trial] > 0:
-                    self.frame.dff['0.5_prelick'][
-                        self.frame.tr_counts['0.5_prelick'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_prelick'] += 1
-                elif self.beh.stim.prob[trial] == 0.5 \
-                     and self.beh.lick.antic_raw[trial] == 0:
-                    self.frame.dff['0.5_noprelick'][
-                        self.frame.tr_counts['0.5_noprelick'], :] \
-                        = _dff[0:n_frames_tot]
-                    self.frame.tr_counts['0.5_noprelick'] += 1
-
-            # plot stim-aligned traces
-            if plt_show is True:
-                if plot_type is None:
-                    stim_conds = ['0', '0.5', '1']
-                elif plot_type == 'rew_norew':
-                    stim_conds = ['0.5_rew', '0.5_norew']
-                elif plot_type == 'prelick_noprelick':
-                    stim_conds = ['0.5_prelick', '0.5_noprelick']
-
-                for stim_cond in stim_conds:
-                    ax_trace.plot(self.frame.t,
-                                  np.mean(self.frame.dff[stim_cond], axis=0),
-                                  color=colors[stim_cond],
-                                  linestyle=linestyles[stim_cond])
-                    ax_trace.fill_between(
-                        self.frame.t,
-                        np.mean(self.frame.dff[stim_cond], axis=0) -
-                        np.std(self.frame.dff[stim_cond], axis=0),
-                        np.mean(self.frame.dff[stim_cond], axis=0) +
-                        np.std(self.frame.dff[stim_cond], axis=0),
-                        facecolor=colors[stim_cond],
-                        alpha=0.2)
-
-                # plot rew and stim traces
-                ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
-                                 linewidth=1.5, alpha=0.8)
-                ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
-                                 linewidth=1.5, alpha=0.8)
-
-                ax_trace.set_xlabel('time (s)')
-                ax_trace.set_ylabel('df/f')
-
-                fig_avg.savefig(os.path.join(
-                    os.getcwd(), 'figs_mbl',
-                    f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                    + f'{plot_type=}_{t_pre=}_{t_post=}_'
-                    + f'_ch={self.ch_img}_mean_trial_activity.pdf'))
-
-                plt.show()
-
-        else:
+        if hasattr(self.beh, 'tr_conds_outcome'):
             _cmap = sns.cubehelix_palette(
                 as_cmap=True, start=2, rot=0, dark=0.1, light=0.6)
-            _outcomes = self.beh.tr_conds_outcome
-            _max_outcome = np.max(_outcomes)
-            colors = {str(p): _cmap(_outcomes[i] / _max_outcome)
+            _max = np.max(self.beh.tr_conds_outcome)
+            colors = {str(p): _cmap(self.beh.tr_conds_outcome[i] / _max)
                       for i, p in enumerate(self.beh._stimparser.parsed_param)}
-            linestyles = {str(p): 'solid'
-                          for p in self.beh._stimparser.parsed_param}
+        else:
+            _palette = sns.cubehelix_palette(
+                n_colors=len(self.beh.tr_inds), start=2, rot=0,
+                dark=0.1, light=0.6)
+            colors = {k: _palette[i] for i, k in enumerate(self.beh.tr_inds)}
+        linestyles = {k: 'solid' for k in self.beh.tr_inds}
+        if '0.5_norew' in linestyles:
+            linestyles['0.5_norew'] = 'dashed'
+        if '0.5_noprelick' in linestyles:
+            linestyles['0.5_noprelick'] = 'dashed'
 
-            self.frame.dff = {}
-            for param_val in self.beh._stimparser.parsed_param:
-                self.frame.dff[str(param_val)] = np.zeros((
-                    self.beh.tr_inds[str(param_val)].shape[0], n_frames_tot))
+        self.frame.dff = {}
+        for _cond in self.beh.tr_inds:
+            self.frame.dff[_cond] = np.zeros((
+                self.beh.tr_inds[_cond].shape[0], n_frames_tot))
+        self.frame.t = np.linspace(-1*t_pre, 2+t_post, n_frames_tot)
+        self.frame.tr_counts = {k: 0 for k in self.beh.tr_inds}
 
-            self.frame.t = np.linspace(-1*t_pre, 2+t_post,
-                                       n_frames_tot)
+        _trials = np.arange(self.beh._stimrange.first, self.beh._stimrange.last)
+        _all_ind_t_start = np.searchsorted(
+            self.rec_t, self.beh.stim.t_start[_trials] - t_pre)
+        for _i, trial in enumerate(_trials):
+            print(f'\t{trial=}', end='\r')
+            _ind_t_start = _all_ind_t_start[_i]
+            _f = np.mean(np.mean(
+                self.rec[_ind_t_start:_ind_t_start + n_frames_tot, :, :],
+                axis=1), axis=1)
+            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+            for _cond in self._trial_cond_map.get(int(trial), []):
+                if _cond in self.frame.dff:
+                    self.frame.dff[_cond][
+                        self.frame.tr_counts[_cond], :] = _dff[0:n_frames_tot]
+                    self.frame.tr_counts[_cond] += 1
 
-            # store stim-aligned trace
-            self.frame.tr_counts = {str(p): 0
-                                    for p in self.beh._stimparser.parsed_param}
-            for trial in range(self.beh._stimrange.first,
-                               self.beh._stimrange.last):
-                print(f'\t{trial=}', end='\r')
-                _t_stim = self.beh.stim.t_start[trial]
-                _t_start = _t_stim - t_pre
-                _t_end = self.beh._data.get_event_var(
-                    'totalRewardTimes')[trial] + t_post
+        # determine which conditions to plot
+        if plot_type is None:
+            stim_conds = list(self.beh.tr_conds)
+        elif plot_type == 'rew_norew':
+            stim_conds = ['0.5_rew', '0.5_norew']
+        elif plot_type == 'prelick_noprelick':
+            stim_conds = ['0.5_prelick', '0.5_noprelick']
+        else:
+            stim_conds = list(self.beh.tr_conds)
 
-                _ind_t_start = np.argmin(np.abs(
-                    self.rec_t - _t_start))
-                _ind_t_end = np.argmin(np.abs(
-                    self.rec_t - _t_end)) + 1  # add frames to end
+        # plot stim-aligned traces
+        if plt_show is True:
+            for stim_cond in stim_conds:
+                if stim_cond not in self.frame.dff:
+                    continue
+                _color = colors.get(stim_cond, 'grey')
+                _ls = linestyles.get(stim_cond, 'solid')
+                ax_trace.plot(self.frame.t,
+                              np.mean(self.frame.dff[stim_cond], axis=0),
+                              color=_color,
+                              linestyle=_ls)
+                ax_trace.fill_between(
+                    self.frame.t,
+                    np.mean(self.frame.dff[stim_cond], axis=0) -
+                    np.std(self.frame.dff[stim_cond], axis=0),
+                    np.mean(self.frame.dff[stim_cond], axis=0) +
+                    np.std(self.frame.dff[stim_cond], axis=0),
+                    facecolor=_color,
+                    alpha=0.2)
 
-                # extract fluorescence
-                _f = np.mean(np.mean(
-                    self.rec[_ind_t_start:_ind_t_end, :, :], axis=1), axis=1)
-                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+            # plot rew and stim traces
+            ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
+                             linewidth=1.5, alpha=0.8)
+            ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
+                             linewidth=1.5, alpha=0.8)
 
-                for param_val in self.beh._stimparser.parsed_param:
-                    if self.beh._stimparser._all_parsed_param[trial] == param_val:
-                        _key = str(param_val)
-                        self.frame.dff[_key][
-                            self.frame.tr_counts[_key], :] \
-                            = _dff[0:n_frames_tot]
-                        self.frame.tr_counts[_key] += 1
+            ax_trace.set_xlabel('time (s)')
+            ax_trace.set_ylabel('df/f')
 
-            # plot stim-aligned traces
-            if plt_show is True:
-                for i, param_val in enumerate(self.beh._stimparser.parsed_param):
-                    _key = str(param_val)
-                    _outcome_val = _outcomes[i]
-                    ax_trace.plot(self.frame.t,
-                                  np.mean(self.frame.dff[_key], axis=0),
-                                  color=colors[_key],
-                                  linestyle=linestyles[_key],
-                                  label=f'{_outcome_val:.3g}')
-                    ax_trace.fill_between(
-                        self.frame.t,
-                        np.mean(self.frame.dff[_key], axis=0) -
-                        np.std(self.frame.dff[_key], axis=0),
-                        np.mean(self.frame.dff[_key], axis=0) +
-                        np.std(self.frame.dff[_key], axis=0),
-                        facecolor=colors[_key],
-                        alpha=0.2)
+            fig_avg.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{plot_type=}_{t_pre=}_{t_post=}_'
+                + f'_ch={self.ch_img}_mean_trial_activity.pdf'))
 
-                ax_trace.legend(title='outcome size')
-
-                # plot rew and stim traces
-                ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
-                                 linewidth=1.5, alpha=0.8)
-                ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
-                                 linewidth=1.5, alpha=0.8)
-
-                ax_trace.set_xlabel('time (s)')
-                ax_trace.set_ylabel('df/f')
-
-                fig_avg.savefig(os.path.join(
-                    os.getcwd(), 'figs_mbl',
-                    f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                    + f'{plot_type=}_{t_pre=}_{t_post=}_'
-                    + f'_ch={self.ch_img}_mean_trial_activity.pdf'))
-
-                plt.show()
+            plt.show()
 
     def plt_sectors(self,
                     n_sectors=10,
@@ -2914,305 +2547,76 @@ class TwoPRec(object):
                 else np.argmin(_outcomes)
             sort_tr_type = self.beh.tr_conds[_pick]
 
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
+        _tr_conds_all = list(self.beh.tr_inds.keys())
+        _tr_conds_plot = list(self.beh.tr_conds)
 
-            self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
-            self.neur.dff_aln_mean = {}
-            for tr_type in ['0', '0.5', '1', '0.5_rew',
-                            '0.5_norew', '0.5_prelick',
-                            '0.5_noprelick']:
-                self.neur.dff_aln_mean[tr_type] = np.zeros((n_neurs, n_frames_tot))
-            self.neur.x = np.zeros(n_neurs)
-            self.neur.y = np.zeros(n_neurs)
+        self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
+        self.neur.dff_aln_mean = {}
+        for _tr_cond in _tr_conds_all:
+            self.neur.dff_aln_mean[_tr_cond] = np.zeros(
+                (n_neurs, n_frames_tot))
+        self.neur.x = np.zeros(n_neurs)
+        self.neur.y = np.zeros(n_neurs)
 
-            self.neur.t_aln = np.linspace(
-                -1*t_pre, 2+t_post, n_frames_tot)
+        self.neur.t_aln = np.linspace(
+            -1*t_pre, 2+t_post, n_frames_tot)
 
-            # iterate through trials
-            # ----------------
-            for ind, neur in enumerate(neurs):
-                # extract x/y locations
-                self.neur.x[ind] = self.neur.stat[neur]['med'][0]
-                self.neur.y[ind] = self.neur.stat[neur]['med'][1]
-                # correct for image crop
-                self.neur.x[ind] -= self.ops.n_px_remove_sides
-                self.neur.y[ind] -= self.ops.n_px_remove_sides
+        # iterate through neurons
+        # ----------------
+        for ind, neur in enumerate(neurs):
+            # extract x/y locations
+            self.neur.x[ind] = self.neur.stat[neur]['med'][0]
+            self.neur.y[ind] = self.neur.stat[neur]['med'][1]
+            # correct for image crop
+            self.neur.x[ind] -= self.ops.n_px_remove_sides
+            self.neur.y[ind] -= self.ops.n_px_remove_sides
 
-                # setup structure
-                # -------------
-                self.neur.dff_aln[ind] = {}
-                self.neur.dff_aln[ind]['0'] = np.zeros((
-                    self.beh.tr_inds['0'].shape[0], n_frames_tot))
-                self.neur.dff_aln[ind]['0.5'] = np.zeros((
-                    self.beh.tr_inds['0.5'].shape[0], n_frames_tot))
-                self.neur.dff_aln[ind]['1'] = np.zeros((
-                    self.beh.tr_inds['1'].shape[0], n_frames_tot))
+            # setup per-neuron dff_aln structure
+            # -------------
+            self.neur.dff_aln[ind] = {}
+            for _tr_cond in _tr_conds_all:
+                self.neur.dff_aln[ind][_tr_cond] = np.zeros((
+                    self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
 
-                self.neur.dff_aln[ind]['0.5_rew'] = np.zeros((
-                    self.beh.tr_inds['0.5_rew'].shape[0], n_frames_tot))
-                self.neur.dff_aln[ind]['0.5_norew'] = np.zeros((
-                    self.beh.tr_inds['0.5_norew'].shape[0], n_frames_tot))
+            _tr_counts = {k: 0 for k in _tr_conds_all}
 
-                self.neur.dff_aln[ind]['0.5_prelick'] = np.zeros((
-                    self.beh.tr_inds['0.5_prelick'].shape[0],
-                    n_frames_tot))
-                self.neur.dff_aln[ind]['0.5_noprelick'] = np.zeros((
-                    self.beh.tr_inds['0.5_noprelick'].shape[0],
-                    n_frames_tot))
-
-                self.neur.dff_aln_mean[ind] = {}
-
-                _tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                              '0.5_rew': 0, '0.5_norew': 0,
-                              '0.5_prelick': 0,
-                              '0.5_noprelick': 0}
-
-                # extract fluorescence for each trial
-                # -------------
-                for trial in range(self.beh._stimrange.first,
-                                   self.beh._stimrange.last):
-                    print(f'\t\t\tneur={int(neur)} | {trial=}', end='\r')
-                    _t_stim = self.beh.stim.t_start[trial]
-                    _t_start = _t_stim - t_pre
-                    _t_end = self.beh._data.get_event_var(
-                        'totalRewardTimes')[trial] + t_post
-
-                    _ind_t_start = np.argmin(np.abs(
-                        self.neur.t - _t_start))
-                    _ind_t_end = np.argmin(np.abs(
-                        self.neur.t - _t_end)) + 2   # add frames to end
-
-                    if zscore is True:
-                        _f = sp.stats.zscore(self.neur.f[neur, :])[
-                            _ind_t_start:_ind_t_end]
-                    elif zscore is False:
-                        _f = self.neur.f[neur, _ind_t_start:_ind_t_end]
-                    _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                    if self.beh.stim.prob[trial] == 0:
-                        self.neur.dff_aln[ind]['0'][_tr_counts['0'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5:
-                        self.neur.dff_aln[ind]['0.5'][_tr_counts['0.5'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5'] += 1
-                    elif self.beh.stim.prob[trial] == 1:
-                        self.neur.dff_aln[ind]['1'][_tr_counts['1'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['1'] += 1
-
-                    if self.beh.stim.prob[trial] == 0.5 \
-                       and self.beh.rew.delivered[trial] == 1:
-                        self.neur.dff_aln[ind]['0.5_rew'][
-                            _tr_counts['0.5_rew'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_rew'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5 \
-                         and self.beh.rew.delivered[trial] == 0:
-                        self.neur.dff_aln[ind]['0.5_norew'][
-                            _tr_counts['0.5_norew'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_norew'] += 1
-
-                    if self.beh.stim.prob[trial] == 0.5 \
-                       and self.beh.lick.antic_raw[trial] > 0:
-                        self.neur.dff_aln[ind]['0.5_prelick'][
-                            _tr_counts['0.5_prelick'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_prelick'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5 \
-                         and self.beh.lick.antic_raw[trial] == 0:
-                        self.neur.dff_aln[ind]['0.5_noprelick'][
-                            _tr_counts['0.5_noprelick'], :] \
-                            = _dff[0:n_frames_tot]
-                        _tr_counts['0.5_noprelick'] += 1
-
-                for tr_type in ['0', '0.5', '1', '0.5_rew',
-                                '0.5_norew', '0.5_prelick',
-                                '0.5_noprelick']:
-                    self.neur.dff_aln_mean[tr_type][ind, :] = \
-                        np.mean(self.neur.dff_aln[ind][tr_type], axis=0)
-
-            # process data for plotting
-            # ------------
-            _ind_stim_start = np.argmin(np.abs(self.neur.t_aln))
-            _ind_stim_end = np.argmin(np.abs(self.neur.t_aln - 2))
-            _ind_rew_end = np.argmin(np.abs(self.neur.t_aln - (2 + t_post)))
-
-            if sort_by == 'trial_type':
-                # sort by peak activation for the chosen trial type (stim window)
-                _sort_metric = np.max(
-                    self.neur.dff_aln_mean[sort_tr_type][
-                        :, _ind_stim_start:_ind_stim_end],
-                    axis=1)
-                sort_inds_corr = np.argsort(_sort_metric)
-
-            elif sort_by == 'selectivity':
-                # sort by absolute difference between 100% and 0% reward responses
-                _sort_metric = np.abs(np.max(
-                    self.neur.dff_aln_mean['1'][
-                        :, _ind_stim_start:_ind_stim_end]
-                    - self.neur.dff_aln_mean['0'][
-                        :, _ind_stim_start:_ind_stim_end],
-                    axis=1))
-                sort_inds_corr = np.argsort(_sort_metric)
-
-            elif sort_by == 'reward':
-                # sort by peak response in the post-reward window
-                #on 100%-reward trials
-                _sort_metric = np.max(
-                    self.neur.dff_aln_mean['1'][:, _ind_stim_end:_ind_rew_end],
-                    axis=1)
-                sort_inds_corr = np.argsort(_sort_metric)
-
+            # precompute zscore for this neuron (avoids repeated full-array zscore)
+            if zscore is True:
+                _f_full = sp.stats.zscore(self.neur.f[neur, :])
             else:
-                raise ValueError(
-                    "sort_by must be 'trial_type',"
-                    + f"'selectivity', or 'reward'; got {sort_by!r}"
-                )
+                _f_full = self.neur.f[neur, :]
 
-            plt_vmin = np.min(
-                [self.neur.dff_aln_mean['0'],
-                 self.neur.dff_aln_mean['0.5'],
-                 self.neur.dff_aln_mean['1']])
-            plt_vmax = np.max(
-                [self.neur.dff_aln_mean['0'],
-                 self.neur.dff_aln_mean['0.5'],
-                 self.neur.dff_aln_mean['1']])
+            # extract fluorescence for each trial
+            # -------------
+            for trial in range(self.beh._stimrange.first,
+                               self.beh._stimrange.last):
+                print(f'\t\t\tneur={int(neur)} | {trial=}', end='\r')
+                _t_stim = self.beh.stim.t_start[trial]
+                _t_start = _t_stim - t_pre
 
-            if plt_equal is True:
-                if abs(plt_vmin) < abs(plt_vmax):
-                    plt_vmin = -1 * plt_vmax
-                elif abs(plt_vmin) > abs(plt_vmax):
-                    plt_vmax = -1 * plt_vmin
+                _ind_t_start = np.argmin(np.abs(
+                    self.neur.t - _t_start))
 
-            # plot figure
-            # -----------------
-            fig = plt.figure(figsize=figsize)
-            spec = gs.GridSpec(nrows=1, ncols=3,
-                               figure=fig)
-            ax_0pc = fig.add_subplot(spec[0, 0])
-            ax_50pc = fig.add_subplot(spec[0, 1], sharey=ax_0pc)
-            ax_100pc = fig.add_subplot(spec[0, 2], sharey=ax_0pc)
+                _f = _f_full[_ind_t_start:_ind_t_start + n_frames_tot]
+                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
 
-            ax_0pc.pcolormesh(
-                self.neur.dff_aln_mean['0'][sort_inds_corr],
-                vmin=plt_vmin, vmax=plt_vmax,
-                cmap=cmap)
-            ax_50pc.pcolormesh(
-                self.neur.dff_aln_mean['0.5'][sort_inds_corr],
-                vmin=plt_vmin, vmax=plt_vmax,
-                cmap=cmap)
-            ax_100pc.pcolormesh(
-                self.neur.dff_aln_mean['1'][sort_inds_corr],
-                vmin=plt_vmin, vmax=plt_vmax,
-                cmap=cmap)
+                for _cond in self._trial_cond_map.get(int(trial), []):
+                    if _cond in self.neur.dff_aln[ind]:
+                        self.neur.dff_aln[ind][_cond][
+                            _tr_counts[_cond], :] = _dff[0:n_frames_tot]
+                        _tr_counts[_cond] += 1
 
-            _ind_zero = np.argmin(np.abs(self.neur.t_aln))
-            _ind_rew = np.argmin(np.abs(self.neur.t_aln-2))
+            for _tr_cond in _tr_conds_all:
+                self.neur.dff_aln_mean[_tr_cond][ind, :] = \
+                    np.mean(self.neur.dff_aln[ind][_tr_cond], axis=0)
 
-            for _ax in [ax_0pc, ax_50pc, ax_100pc]:
-                _ax.axvline(_ind_zero,
-                            color=sns.xkcd_rgb['dark grey'],
-                            linewidth=1,
-                            linestyle='dashed')
-                _ax.axvline(_ind_rew,
-                            color=sns.xkcd_rgb['bright blue'],
-                            linewidth=1,
-                            linestyle='dashed')
-                _ax.set_xticks(
-                    ticks=[0, _ind_zero, self.neur.t_aln.shape[-1]],
-                    labels=[f'{self.neur.t_aln[0]:.2f}', 0,
-                            f'{self.neur.t_aln[-1]:.2f}'])
-            ax_0pc.set_title('p(rew)=0')
-            ax_50pc.set_title('p(rew)=0.5')
-            ax_100pc.set_title('p(rew)=1')
-            ax_0pc.set_ylabel('neuron')
-            ax_50pc.set_xlabel('time from stim (s)')
+        # process data for plotting
+        # ------------
+        _ind_stim_start = np.argmin(np.abs(self.neur.t_aln))
+        _ind_stim_end = np.argmin(np.abs(self.neur.t_aln - 2))
+        _ind_rew_end = np.argmin(np.abs(self.neur.t_aln - (2 + t_post)))
 
-            fig.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{t_pre=}_{t_post=}_{zscore=}_{plt_equal=}_'
-                + 'neur_trial_activity.pdf'))
-
-            plt.show()
-
-        # if not parsing by stimulusOrientation (special case):
-        else:
-            _tr_conds = self.beh.tr_conds
-            _all_trs_cond = self.beh._stimparser._all_parsed_param
-
-            self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
-            self.neur.dff_aln_mean = {}
-            for _tr_cond in _tr_conds:
-                self.neur.dff_aln_mean[_tr_cond] = np.zeros(
-                    (n_neurs, n_frames_tot))
-            self.neur.x = np.zeros(n_neurs)
-            self.neur.y = np.zeros(n_neurs)
-
-            self.neur.t_aln = np.linspace(
-                -1*t_pre, 2+t_post, n_frames_tot)
-
-            # iterate through trials
-            # ----------------
-            for ind, neur in enumerate(neurs):
-                # extract x/y locations
-                self.neur.x[ind] = self.neur.stat[neur]['med'][0]
-                self.neur.y[ind] = self.neur.stat[neur]['med'][1]
-                # correct for image crop
-                self.neur.x[ind] -= self.ops.n_px_remove_sides
-                self.neur.y[ind] -= self.ops.n_px_remove_sides
-
-                # setup structure
-                # -------------
-                self.neur.dff_aln[ind] = {}
-                for _tr_cond in _tr_conds:
-                    self.neur.dff_aln[ind][_tr_cond] = np.zeros((
-                        self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
-
-                _tr_counts = {k: 0 for k in _tr_conds}
-
-                # extract fluorescence for each trial
-                # -------------
-                for trial in range(self.beh._stimrange.first,
-                                   self.beh._stimrange.last):
-                    print(f'\t\t\tneur={int(neur)} | {trial=}', end='\r')
-                    _t_stim = self.beh.stim.t_start[trial]
-                    _t_start = _t_stim - t_pre
-                    _t_end = self.beh._data.get_event_var(
-                        'totalRewardTimes')[trial] + t_post
-
-                    _ind_t_start = np.argmin(np.abs(
-                        self.neur.t - _t_start))
-                    _ind_t_end = np.argmin(np.abs(
-                        self.neur.t - _t_end)) + 2   # add frames to end
-
-                    if zscore is True:
-                        _f = sp.stats.zscore(self.neur.f[neur, :])[
-                            _ind_t_start:_ind_t_end]
-                    elif zscore is False:
-                        _f = self.neur.f[neur, _ind_t_start:_ind_t_end]
-                    _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                    # save in self.neur.dff_aln for the correct tr_cond
-                    for _tr_cond in _tr_conds:
-                        if _all_trs_cond[trial] == int(_tr_cond):
-                            self.neur.dff_aln[ind][_tr_cond][
-                                _tr_counts[_tr_cond], :] \
-                                = _dff[0:n_frames_tot]
-                            _tr_counts[_tr_cond] += 1
-
-                for _tr_cond in _tr_conds:
-                    self.neur.dff_aln_mean[_tr_cond][ind, :] = \
-                        np.mean(self.neur.dff_aln[ind][_tr_cond], axis=0)
-
-            # process data for plotting
-            # ------------
-            _ind_stim_start = np.argmin(np.abs(self.neur.t_aln))
-            _ind_stim_end = np.argmin(np.abs(self.neur.t_aln - 2))
-
+        if sort_by == 'trial_type':
             # sort by peak activation for the chosen trial type (stim window)
             _sort_metric = np.max(
                 self.neur.dff_aln_mean[sort_tr_type][
@@ -3220,57 +2624,83 @@ class TwoPRec(object):
                 axis=1)
             sort_inds_corr = np.argsort(_sort_metric)
 
-            plt_vmin = np.min(
-                [self.neur.dff_aln_mean[k] for k in _tr_conds])
-            plt_vmax = np.max(
-                [self.neur.dff_aln_mean[k] for k in _tr_conds])
+        elif sort_by == 'selectivity':
+            # sort by absolute difference between highest and lowest outcome
+            _cond_max = _tr_conds_plot[-1]
+            _cond_min = _tr_conds_plot[0]
+            _sort_metric = np.abs(np.max(
+                self.neur.dff_aln_mean[_cond_max][
+                    :, _ind_stim_start:_ind_stim_end]
+                - self.neur.dff_aln_mean[_cond_min][
+                    :, _ind_stim_start:_ind_stim_end],
+                axis=1))
+            sort_inds_corr = np.argsort(_sort_metric)
 
-            if plt_equal is True:
-                if abs(plt_vmin) < abs(plt_vmax):
-                    plt_vmin = -1 * plt_vmax
-                elif abs(plt_vmin) > abs(plt_vmax):
-                    plt_vmax = -1 * plt_vmin
+        elif sort_by == 'reward':
+            # sort by peak response in the post-reward window on highest-outcome trials
+            _cond_max = _tr_conds_plot[-1]
+            _sort_metric = np.max(
+                self.neur.dff_aln_mean[_cond_max][:, _ind_stim_end:_ind_rew_end],
+                axis=1)
+            sort_inds_corr = np.argsort(_sort_metric)
 
-            # plot figure - one column per tr_cond
-            # -----------------
-            n_conds = len(_tr_conds)
-            fig = plt.figure(figsize=figsize)
-            spec = gs.GridSpec(nrows=1, ncols=n_conds, figure=fig)
-            axes = [fig.add_subplot(spec[0, 0])]
-            for _i in range(1, n_conds):
-                axes.append(fig.add_subplot(spec[0, _i], sharey=axes[0]))
+        else:
+            raise ValueError(
+                "sort_by must be 'trial_type',"
+                + f"'selectivity', or 'reward'; got {sort_by!r}"
+            )
 
-            _ind_zero = np.argmin(np.abs(self.neur.t_aln))
-            _ind_rew = np.argmin(np.abs(self.neur.t_aln - 2))
+        plt_vmin = np.min(
+            [self.neur.dff_aln_mean[k] for k in _tr_conds_plot])
+        plt_vmax = np.max(
+            [self.neur.dff_aln_mean[k] for k in _tr_conds_plot])
 
-            for _ax, _tr_cond in zip(axes, _tr_conds):
-                _ax.pcolormesh(
-                    self.neur.dff_aln_mean[_tr_cond][sort_inds_corr],
-                    vmin=plt_vmin, vmax=plt_vmax,
-                    cmap=cmap)
-                _ax.axvline(_ind_zero,
-                            color=sns.xkcd_rgb['dark grey'],
-                            linewidth=1,
-                            linestyle='dashed')
-                _ax.axvline(_ind_rew,
-                            color=sns.xkcd_rgb['bright blue'],
-                            linewidth=1,
-                            linestyle='dashed')
-                _ax.set_xticks(
-                    ticks=[0, _ind_zero, self.neur.t_aln.shape[-1]],
-                    labels=[f'{self.neur.t_aln[0]:.2f}', 0,
-                            f'{self.neur.t_aln[-1]:.2f}'])
-                _ax.set_title(f'{self.beh._stimparser.parse_by}={_tr_cond}')
-            axes[0].set_ylabel('neuron')
-            axes[n_conds // 2].set_xlabel('time from stim (s)')
+        if plt_equal is True:
+            if abs(plt_vmin) < abs(plt_vmax):
+                plt_vmin = -1 * plt_vmax
+            elif abs(plt_vmin) > abs(plt_vmax):
+                plt_vmax = -1 * plt_vmin
 
-            fig.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{t_pre=}_{t_post=}_{zscore=}_{plt_equal=}_'
-                + 'neur_trial_activity.pdf'))
+        # plot figure - one column per primary tr_cond
+        # -----------------
+        n_conds = len(_tr_conds_plot)
+        fig = plt.figure(figsize=figsize)
+        spec = gs.GridSpec(nrows=1, ncols=n_conds, figure=fig)
+        axes = [fig.add_subplot(spec[0, 0])]
+        for _i in range(1, n_conds):
+            axes.append(fig.add_subplot(spec[0, _i], sharey=axes[0]))
 
-            plt.show()
+        _ind_zero = np.argmin(np.abs(self.neur.t_aln))
+        _ind_rew = np.argmin(np.abs(self.neur.t_aln - 2))
+
+        for _ax, _tr_cond in zip(axes, _tr_conds_plot):
+            _ax.pcolormesh(
+                self.neur.dff_aln_mean[_tr_cond][sort_inds_corr],
+                vmin=plt_vmin, vmax=plt_vmax,
+                cmap=cmap)
+            _ax.axvline(_ind_zero,
+                        color=sns.xkcd_rgb['dark grey'],
+                        linewidth=1,
+                        linestyle='dashed')
+            _ax.axvline(_ind_rew,
+                        color=sns.xkcd_rgb['bright blue'],
+                        linewidth=1,
+                        linestyle='dashed')
+            _ax.set_xticks(
+                ticks=[0, _ind_zero, self.neur.t_aln.shape[-1]],
+                labels=[f'{self.neur.t_aln[0]:.2f}', 0,
+                        f'{self.neur.t_aln[-1]:.2f}'])
+            _ax.set_title(f'{self.beh._stimparser.parse_by}={_tr_cond}')
+        axes[0].set_ylabel('neuron')
+        axes[n_conds // 2].set_xlabel('time from stim (s)')
+
+        fig.savefig(os.path.join(
+            os.getcwd(), 'figs_mbl',
+            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+            + f'{t_pre=}_{t_post=}_{zscore=}_{plt_equal=}_'
+            + 'neur_trial_activity.pdf'))
+
+        plt.show()
 
         return
 
@@ -4352,6 +3782,8 @@ class TwoPRec_DualColour(TwoPRec):
         # -------------------
         self.beh.tr_inds = {}
         if self.beh._stimparser.parse_by == 'stimulusOrientation':
+            self.beh.tr_conds = ['0', '0.5', '1', '0.5_rew', '0.5_norew']
+
             self.beh.tr_inds['0'] = np.where(self.beh.stim.prob == 0)[0]
             self.beh.tr_inds['0.5'] = np.where(self.beh.stim.prob == 0.5)[0]
             self.beh.tr_inds['1'] = np.where(self.beh.stim.prob == 1)[0]
@@ -4384,6 +3816,10 @@ class TwoPRec_DualColour(TwoPRec):
                                  self.beh._stimrange.first,
                                  self.beh._stimrange.last+1)))
         else:
+            self.beh.tr_conds = self.beh._stimparser.parsed_param.astype(str)
+            self.beh.tr_conds_outcome = (self.beh._stimparser.prob
+                                         * self.beh._stimparser.size)
+
             for param_val in self.beh._stimparser.parsed_param:
                 self.beh.tr_inds[str(param_val)] = np.where(
                     self.beh._stimparser._all_parsed_param == param_val)[0]
@@ -4399,6 +3835,12 @@ class TwoPRec_DualColour(TwoPRec):
             # add lickrates
             # ----------------
             self.add_lickrates()
+
+        # build _trial_cond_map: maps each trial index -> list of condition keys
+        self._trial_cond_map = {}
+        for _cond, _inds in self.beh.tr_inds.items():
+            for _idx in _inds:
+                self._trial_cond_map.setdefault(int(_idx), []).append(_cond)
         return
 
     def _get_rec(self, channel='grn'):
