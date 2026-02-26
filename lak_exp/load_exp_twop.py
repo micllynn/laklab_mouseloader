@@ -2073,43 +2073,50 @@ class TwoPRec(object):
             stim_conds = list(self.beh.tr_conds)
 
         # plot stim-aligned traces
-        if plt_show is True:
-            for stim_cond in stim_conds:
-                if stim_cond not in self.frame.dff:
-                    continue
-                _color = colors.get(stim_cond, 'grey')
-                _ls = linestyles.get(stim_cond, 'solid')
-                ax_trace.plot(self.frame.t,
-                              np.mean(self.frame.dff[stim_cond], axis=0),
-                              color=_color,
-                              linestyle=_ls)
-                ax_trace.fill_between(
-                    self.frame.t,
-                    np.mean(self.frame.dff[stim_cond], axis=0) -
-                    np.std(self.frame.dff[stim_cond], axis=0),
-                    np.mean(self.frame.dff[stim_cond], axis=0) +
-                    np.std(self.frame.dff[stim_cond], axis=0),
-                    facecolor=_color,
-                    alpha=0.2)
+        for stim_cond in stim_conds:
+            if stim_cond not in self.frame.dff:
+                continue
+            _color = colors.get(stim_cond, 'grey')
+            _ls = linestyles.get(stim_cond, 'solid')
+            ax_trace.plot(self.frame.t,
+                          np.mean(self.frame.dff[stim_cond], axis=0),
+                          color=_color,
+                          linestyle=_ls)
+            ax_trace.fill_between(
+                self.frame.t,
+                np.mean(self.frame.dff[stim_cond], axis=0) -
+                np.std(self.frame.dff[stim_cond], axis=0),
+                np.mean(self.frame.dff[stim_cond], axis=0) +
+                np.std(self.frame.dff[stim_cond], axis=0),
+                facecolor=_color,
+                alpha=0.2)
 
-            # plot rew and stim traces
-            ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
-                             linewidth=1.5, alpha=0.8)
-            ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
-                             linewidth=1.5, alpha=0.8)
+        # plot rew and stim onset markers
+        ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
+                         linewidth=1.5, alpha=0.8)
+        ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
+                         linewidth=1.5, alpha=0.8)
 
-            ax_trace.set_xlabel('time (s)')
-            ax_trace.set_ylabel('z-score' if use_zscore else 'df/f')
+        ax_trace.set_xlabel('time (s)')
+        ax_trace.set_ylabel('z-score' if use_zscore else 'df/f')
 
-            _ch_suffix = f'_ch={channel}' if channel is not None else \
-                (f'_ch={self.ch_img}' if hasattr(self, 'ch_img') else '')
-            fig_avg.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{plot_type=}_{t_pre=}_{t_post=}'
-                + f'{_ch_suffix}_mean_trial_activity.pdf'))
+        _ch_suffix = f'ch={channel}' if channel is not None else \
+            (f'ch={self.ch_img}' if hasattr(self, 'ch_img') else '')
+        corr_suffix = ''
+        if channel == 'grn' and hasattr(self, 'rec_t_grn') \
+           and hasattr(self, 'corr_sig_method'):
+            corr_suffix = f'_corr={self.corr_sig_method}'
+        zscore_suffix = '_zscore' if use_zscore else ''
+        fig_avg.savefig(os.path.join(
+            os.getcwd(), 'figs_mbl',
+            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+            + f'{plot_type=}_{t_pre=}_{t_post=}_'
+            + f'{_ch_suffix}{corr_suffix}{zscore_suffix}_mean_trial_activity.pdf'))
 
+        if plt_show:
             plt.show()
+        else:
+            plt.close(fig_avg)
 
     def plt_sectors(self,
                     n_sectors=10,
@@ -3901,245 +3908,8 @@ class TwoPRec_DualColour(TwoPRec):
         else:
             raise ValueError(f"channel must be 'red' or 'grn', got '{channel}'")
 
-    def add_frame(self, t_pre=2, t_post=5, channel='grn', use_zscore=False):
-        """
-        Creates trial-averaged signal across the whole field of view.
-
-        Parameters
-        ----------
-        t_pre : float
-            Time before stimulus (seconds)
-        t_post : float
-            Time after reward (seconds)
-        channel : str
-            'red' or 'grn' - which channel to analyze (default: 'grn')
-        use_zscore : bool
-            If True, compute z-scored fluorescence (baseline mean and std
-            over the pre-stimulus window) instead of df/f. (default: False)
-        """
-        print(f'creating trial-averaged signal (whole-frame, {channel})...')
-
-        # setup
-        self.add_lickrates()
-
-        rec = self._get_rec(channel)
-        rec_t = self._get_rec_t(channel)
-
-        self.frame = SimpleNamespace()
-        self.frame.params = SimpleNamespace()
-        self.frame.params.t_rew_pre = t_pre
-        self.frame.params.t_rew_post = t_post
-        self.frame.params.channel = channel
-        self.frame.params.use_zscore = use_zscore
-
-        # setup stim-aligned traces
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int((2 + t_post) * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
-
-        self.frame.dff = {}
-        self.frame.dff['0'] = np.zeros((
-            self.beh.tr_inds['0'].shape[0], n_frames_tot))
-        self.frame.dff['0.5'] = np.zeros((
-            self.beh.tr_inds['0.5'].shape[0], n_frames_tot))
-        self.frame.dff['1'] = np.zeros((
-            self.beh.tr_inds['1'].shape[0], n_frames_tot))
-
-        self.frame.dff['0.5_rew'] = np.zeros((
-            self.beh.tr_inds['0.5_rew'].shape[0], n_frames_tot))
-        self.frame.dff['0.5_norew'] = np.zeros((
-            self.beh.tr_inds['0.5_norew'].shape[0], n_frames_tot))
-        self.frame.dff['0.5_prelick'] = np.zeros((
-            self.beh.tr_inds['0.5_prelick'].shape[0], n_frames_tot))
-        self.frame.dff['0.5_noprelick'] = np.zeros((
-            self.beh.tr_inds['0.5_noprelick'].shape[0], n_frames_tot))
-
-        self.frame.t = np.linspace(-1*t_pre, 2+t_post,
-                                   n_frames_tot)
-
-        # Auto-detect near-zero baseline (corrected residual signal) and fall
-        # back to z-score with a warning rather than dividing by ~0.
-        _use_zscore = use_zscore
-        if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
-            _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
-            _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
-            _probe = np.mean(np.mean(
-                rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
-            _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
-            if np.abs(_f0_probe) < 1.0:
-                print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
-                      'is near zero. Signal appears to be a corrected residual. '
-                      'Falling back to z-score. Pass use_zscore=True explicitly '
-                      'to suppress this check.')
-                _use_zscore = True
-
-        # store stim-aligned trace
-        self.frame.tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                                '0.5_rew': 0, '0.5_norew': 0,
-                                '0.5_prelick': 0, '0.5_noprelick': 0}
-        for trial in range(self.beh._stimrange.first,
-                           self.beh._stimrange.last):
-            print(f'\t{trial=}', end='\r')
-            _t_stim = self.beh.stim.t_start[trial]
-            _t_start = _t_stim - t_pre
-            _t_end = self.beh._data.get_event_var(
-                'totalRewardTimes')[trial] + t_post
-
-            _ind_t_start = np.argmin(np.abs(
-                rec_t - _t_start))
-            _ind_t_end = np.argmin(np.abs(
-                rec_t - _t_end)) + 1  # add frames to end
-
-            # extract fluorescence
-            _f = np.mean(np.mean(
-                rec[_ind_t_start:_ind_t_end, :, :], axis=1), axis=1)
-            if _use_zscore:
-                _baseline = _f[:n_frames_pre]
-                _sigma = np.std(_baseline)
-                _dff = (_f - np.mean(_baseline)) / _sigma \
-                    if _sigma > 0 else np.zeros_like(_f)
-            else:
-                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-            if self.beh.stim.prob[trial] == 0:
-                self.frame.dff['0'][
-                    self.frame.tr_counts['0'], :] \
-                    = _dff[0:n_frames_tot]
-                self.frame.tr_counts['0'] += 1
-            elif self.beh.stim.prob[trial] == 0.5:
-                self.frame.dff['0.5'][
-                    self.frame.tr_counts['0.5'], :] \
-                    = _dff[0:n_frames_tot]
-                self.frame.tr_counts['0.5'] += 1
-            elif self.beh.stim.prob[trial] == 1:
-                self.frame.dff['1'][
-                    self.frame.tr_counts['1'], :] \
-                    = _dff[0:n_frames_tot]
-                self.frame.tr_counts['1'] += 1
-
-            if self.beh.stim.prob[trial] == 0.5 \
-               and self.beh.rew.delivered[trial] == 1:
-                self.frame.dff['0.5_rew'][
-                    self.frame.tr_counts['0.5_rew'], :] \
-                    = _dff[0:n_frames_tot]
-                self.frame.tr_counts['0.5_rew'] += 1
-            elif self.beh.stim.prob[trial] == 0.5 \
-                 and self.beh.rew.delivered[trial] == 0:
-                self.frame.dff['0.5_norew'][
-                    self.frame.tr_counts['0.5_norew'], :] \
-                    = _dff[0:n_frames_tot]
-                self.frame.tr_counts['0.5_norew'] += 1
-
-            if self.beh.stim.prob[trial] == 0.5 \
-               and self.beh.lick.antic_raw[trial] > 0:
-                self.frame.dff['0.5_prelick'][
-                    self.frame.tr_counts['0.5_prelick'], :] \
-                    = _dff[0:n_frames_tot]
-                self.frame.tr_counts['0.5_prelick'] += 1
-            elif self.beh.stim.prob[trial] == 0.5 \
-                 and self.beh.lick.antic_raw[trial] == 0:
-                self.frame.dff['0.5_noprelick'][
-                    self.frame.tr_counts['0.5_noprelick'], :] \
-                    = _dff[0:n_frames_tot]
-                self.frame.tr_counts['0.5_noprelick'] += 1
-
-    def plt_frame(self,
-                  figsize=(3.43, 2),
-                  t_pre=2, t_post=5,
-                  colors=sns.cubehelix_palette(
-                      n_colors=3,
-                      start=2, rot=0,
-                      dark=0.1, light=0.6),
-                  plot_type=None,
-                  plt_show=True,
-                  channel='grn',
-                  use_zscore=False):
-        """
-        Plots the average fluorescence across the whole field of view,
-        separated by trial type (0%, 50%, 100% rewarded trials).
-
-        Dual-colour version of TwoPRec.plt_frame: accepts a channel kwarg
-        to select which imaging channel to use.
-
-        Parameters
-        ----------
-        channel : str
-            Which channel to use: 'grn' or 'red' (default: 'grn')
-        plot_type : str or None
-            None: plots 0, 0.5, 1
-            'rew_norew': plots 0.5_rew, 0.5_norew
-            'prelick_noprelick': plots 0.5_prelick, 0.5_noprelick
-
-        All other parameters are identical to TwoPRec.plt_frame.
-        """
-        print(f'creating trial-averaged signal (whole-frame, {channel})...')
-
-        self.add_frame(t_pre=t_pre, t_post=t_post, channel=channel,
-                       use_zscore=use_zscore)
-
-        colors = {'0': colors[0],
-                  '0.5': colors[1],
-                  '1': colors[2],
-                  '0.5_rew': colors[1],
-                  '0.5_norew': colors[1],
-                  '0.5_prelick': colors[1],
-                  '0.5_noprelick': colors[1]}
-        linestyles = {'0': 'solid',
-                      '0.5': 'solid',
-                      '1': 'solid',
-                      '0.5_rew': 'solid',
-                      '0.5_norew': 'dashed',
-                      '0.5_prelick': 'solid',
-                      '0.5_noprelick': 'dashed'}
-
-        fig_avg = plt.figure(figsize=figsize)
-        spec = gs.GridSpec(nrows=1, ncols=1, figure=fig_avg)
-        ax_trace = fig_avg.add_subplot(spec[0, 0])
-
-        if plot_type is None:
-            stim_conds = ['0', '0.5', '1']
-        elif plot_type == 'rew_norew':
-            stim_conds = ['0.5_rew', '0.5_norew']
-        elif plot_type == 'prelick_noprelick':
-            stim_conds = ['0.5_prelick', '0.5_noprelick']
-
-        for stim_cond in stim_conds:
-            ax_trace.plot(self.frame.t,
-                          np.mean(self.frame.dff[stim_cond], axis=0),
-                          color=colors[stim_cond],
-                          linestyle=linestyles[stim_cond])
-            ax_trace.fill_between(
-                self.frame.t,
-                np.mean(self.frame.dff[stim_cond], axis=0) -
-                np.std(self.frame.dff[stim_cond], axis=0),
-                np.mean(self.frame.dff[stim_cond], axis=0) +
-                np.std(self.frame.dff[stim_cond], axis=0),
-                facecolor=colors[stim_cond],
-                alpha=0.2)
-
-        ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
-                         linewidth=1.5, alpha=0.8)
-        ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
-                         linewidth=1.5, alpha=0.8)
-        ax_trace.set_xlabel('time (s)')
-        ax_trace.set_ylabel('z-score' if use_zscore else 'df/f')
-
-        corr_suffix = ''
-        if channel == 'grn' and hasattr(self, 'rec_t_grn') \
-           and hasattr(self, 'corr_sig_method'):
-            corr_suffix = f'_corr={self.corr_sig_method}'
-        zscore_suffix = '_zscore' if use_zscore else ''
-
-        fig_avg.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'ch={channel}{corr_suffix}{zscore_suffix}_mean_trial_activity.pdf'))
-
-        if plt_show:
-            plt.show()
-        else:
-            plt.close(fig_avg)
+    # add_frame and plt_frame are inherited from TwoPRec which now supports
+    # channel, use_zscore, _get_rec/_get_rec_t, and _trial_cond_map.
 
     def add_sectors(self,
                     n_sectors=10,
