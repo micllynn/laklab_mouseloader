@@ -1,2 +1,0 @@
-[console_scripts]
-beh-check = laklab_mouseloader.cmd_line_tools.beh_check:main

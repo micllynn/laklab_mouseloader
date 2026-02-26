@@ -4,15 +4,15 @@ Python script to generate a learning figure from a
 Pavlovian behavioral experiment in mice
 """
 
-import laklab_mouseloader.plt_beh as lml_plt
+import lak_exp.plt_beh as le_plt
 import argparse
 
 
 def plot_behaviour(fname, noise=False):
     if noise is False:
-        vp = lml_plt.VisualPavlovAnalysis(fname, lick_type='normal')
+        vp = le_plt.VisualPavlovAnalysis(fname, lick_type='normal')
     elif noise is True:
-        vp = lml_plt.VisualPavlovAnalysis(fname, lick_type='noise')
+        vp = le_plt.VisualPavlovAnalysis(fname, lick_type='noise')
 
     vp.plt()
 

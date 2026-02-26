@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "laklab-mouseloader"
+name = "lak-exp"
 version = "0.1"
 description = "LakLab MouseLoader: Package for loading and analyzing rodent visual behavior experiments with Neuropixels data, including histology registration, alignment tools, and RigBox Timeline/Block file parsers"
 readme = "README.md"
@@ -57,14 +57,14 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mbfl/laklab_mouseloader"
-Repository = "https://github.com/mbfl/laklab_mouseloader"
+Homepage = "https://github.com/mbfl/lak_exp"
+Repository = "https://github.com/mbfl/lak_exp"
 
 [project.scripts]
-beh-check = "laklab_mouseloader.cmd_line_tools.beh_check:main"
+beh-check = "lak_exp.cmd_line_tools.beh_check:main"
 
 [tool.setuptools]
-packages = ["laklab_mouseloader", "laklab_mouseloader.cmd_line_tools"]
+packages = ["lak_exp", "lak_exp.cmd_line_tools"]
 
 [tool.setuptools.package-data]
-laklab_mouseloader = ["*.py"]
+lak_exp = ["*.py"]

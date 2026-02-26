@@ -355,6 +355,7 @@ class StimParser(object):
             Method for parsing trial types. Options:
             - 'stimulusOrientation': Parse by orientation of visual grating
             - 'stimulusTypeValues': Parse by stimulus type (grating, square, etc.)
+            - 'stimulusType': Works to parse by auditory stimuli types
             - Any other string: Generic parameter name from beh._data.get_param_var()
             - None: Combine all trials into one type, averaging fields
             Default is 'stimulusOrientation'.
@@ -425,20 +426,6 @@ class StimParser(object):
                 self.prob[ind] = _stimprob
                 self.size[ind] = _stimsize
 
-        elif parse_by is None:
-            # Combine all trials into one type, averaging fields
-            self.parsed_param = np.array([0])  # Single condition ID
-            n_trials = len(self._all_stimprobs)
-            self._all_parsed_param = np.zeros(n_trials)  # All trials same type
-
-            # Average probability and size across all trials
-            self.prob = np.array([np.mean(self._all_stimprobs)])
-            self.size = np.array([np.mean(self._all_stimsizes)])
-
-            # Set ori to average for compatibility
-            self.ori = np.array([np.mean(self._all_stimoris)])
-            self.stimtype = np.array([0])
-
         elif type(parse_by) == str:
             # Generic string parameter - get from param_var
             _param_raw = beh._data.get_param_var(parse_by)
@@ -471,6 +458,20 @@ class StimParser(object):
             # Store ori and stimtype for compatibility
             self.ori = self.parsed_param
             self.stimtype = self.parsed_param
+
+        elif parse_by is None:
+            # Combine all trials into one type, averaging fields
+            self.parsed_param = np.array([0])  # Single condition ID
+            n_trials = len(self._all_stimprobs)
+            self._all_parsed_param = np.zeros(n_trials)  # All trials same type
+
+            # Average probability and size across all trials
+            self.prob = np.array([np.mean(self._all_stimprobs)])
+            self.size = np.array([np.mean(self._all_stimsizes)])
+
+            # Set ori to average for compatibility
+            self.ori = np.array([np.mean(self._all_stimoris)])
+            self.stimtype = np.array([0])
 
         return
 

@@ -19,7 +19,7 @@ class DecodingObj(object):
         """
         Object for running decoding analysis.
 
-        ephys must be the output from laklab_mouseloader.analysis_fns.get_ephys_all().
+        ephys must be the output from lak_exp.analysis_fns.get_ephys_all().
         """
         self.ephys = ephys
         return
