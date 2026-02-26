@@ -408,7 +408,13 @@ class TwoPRec(object):
 
         return
 
-    def add_frame(self, t_pre=2, t_post=5):
+    def _get_rec(self, channel=None):
+        return self.rec
+
+    def _get_rec_t(self, channel=None):
+        return self.rec_t
+
+    def add_frame(self, t_pre=2, t_post=5, channel=None, use_zscore=False):
 
         """
         Plots the average fluorescence across the whole fov,
@@ -429,6 +435,8 @@ class TwoPRec(object):
         self.frame.params = SimpleNamespace()
         self.frame.params.t_rew_pre = t_pre
         self.frame.params.t_rew_post = t_post
+        self.frame.params.channel = channel
+        self.frame.params.use_zscore = use_zscore
 
         # setup stim-aligned traces
         n_frames_pre = int(t_pre * self.samp_rate)
@@ -571,6 +579,10 @@ class TwoPRec(object):
                     n_null=500,
                     resid_type='sector',
                     resid_corr_tr_cond='1',
+                    channel=None,
+                    use_zscore=False,
+                    compute_null=False,
+                    compute_resid_corr=True,
                     colors=sns.cubehelix_palette(
                         n_colors=3,
                         start=2, rot=0,
@@ -589,13 +601,21 @@ class TwoPRec(object):
             elif plot_type == 'rew':
                 stim_list = ['0', '0.5_rew', '1']
         """
-        # compute whole-frame avg in case needed
-        if not hasattr(self, 'frame'):
-            self.add_frame(t_pre=t_pre, t_post=t_post)
-
-        print('creating trial-averaged signal (sectors)...')
         self.add_lickrates(t_prestim=t_pre,
                            t_poststim=t_post)
+
+        rec = self._get_rec(channel)
+        rec_t = self._get_rec_t(channel)
+
+        # compute whole-frame avg in case needed
+        if (not hasattr(self, 'frame')
+                or self.frame.params.use_zscore != use_zscore
+                or self.frame.params.channel != channel):
+            self.add_frame(t_pre=t_pre, t_post=t_post,
+                           channel=channel, use_zscore=use_zscore)
+
+        _ch_str = f', ch={channel}' if channel is not None else ''
+        print(f'creating trial-averaged signal (sectors{_ch_str})...')
 
         self.sector = SimpleNamespace()
 
@@ -605,28 +625,45 @@ class TwoPRec(object):
         self.sector.params.t_rew_post = t_post
         self.sector.n_sectors = n_sectors
         self.sector.n_null = n_null
+        self.sector.params.channel = channel
+        self.sector.params.use_zscore = use_zscore
+        self.sector.params.resid_type = resid_type
+
+        self.sector.colors = {'0': colors[0],
+                              '0.5': colors[1],
+                              '1': colors[2],
+                              '0.5_rew': colors[1],
+                              '0.5_norew': colors[1],
+                              '0.5_prelick': colors[1],
+                              '0.5_noprelick': colors[1]}
+        self.sector.linestyle = {'0': 'solid',
+                                 '0.5': 'solid',
+                                 '1': 'solid',
+                                 '0.5_rew': 'solid',
+                                 '0.5_norew': 'dashed',
+                                 '0.5_prelick': 'solid',
+                                 '0.5_noprelick': 'dashed'}
 
         if self.beh._stimparser.parse_by == 'stimulusOrientation':
-
-            self.sector.colors = {'0': colors[0],
-                                  '0.5': colors[1],
-                                  '1': colors[2],
-                                  '0.5_rew': colors[1],
-                                  '0.5_norew': colors[1],
-                                  '0.5_prelick': colors[1],
-                                  '0.5_noprelick': colors[1]}
-            self.sector.linestyle = {'0': 'solid',
-                                     '0.5': 'solid',
-                                     '1': 'solid',
-                                     '0.5_rew': 'solid',
-                                     '0.5_norew': 'dashed',
-                                     '0.5_prelick': 'solid',
-                                     '0.5_noprelick': 'dashed'}
 
             # setup stim-aligned traces
             n_frames_pre = int(t_pre * self.samp_rate)
             n_frames_post = int((2 + t_post) * self.samp_rate)
             n_frames_tot = n_frames_pre + n_frames_post
+
+            _use_zscore = use_zscore
+            if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
+                _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
+                _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
+                _probe = np.mean(np.mean(
+                    rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
+                _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
+                if np.abs(_f0_probe) < 1.0:
+                    print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
+                          'is near zero. Signal appears to be a corrected residual. '
+                          'Falling back to z-score. Pass use_zscore=True explicitly '
+                          'to suppress this check.')
+                    _use_zscore = True
 
             self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
             self.sector.dff_resid = np.empty((n_sectors, n_sectors),
@@ -650,13 +687,13 @@ class TwoPRec(object):
                 for n_y in range(n_sectors):
                     print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ')
                     # calculate location of sector
-                    _ind_x_lower = int((n_x / n_sectors) * self.rec.shape[1])
+                    _ind_x_lower = int((n_x / n_sectors) * rec.shape[1])
                     _ind_x_upper = int(((n_x+1) / n_sectors)
-                                       * self.rec.shape[1])
+                                       * rec.shape[1])
 
-                    _ind_y_lower = int((n_y / n_sectors) * self.rec.shape[1])
+                    _ind_y_lower = int((n_y / n_sectors) * rec.shape[1])
                     _ind_y_upper = int(((n_y+1) / n_sectors)
-                                       * self.rec.shape[1])
+                                       * rec.shape[1])
 
                     self.sector.x.lower[n_x, n_y] = _ind_x_lower
                     self.sector.x.upper[n_x, n_y] = _ind_x_upper
@@ -690,17 +727,23 @@ class TwoPRec(object):
                             'totalRewardTimes')[trial] + t_post
 
                         _ind_t_start = np.argmin(np.abs(
-                            self.rec_t - _t_start))
+                            rec_t - _t_start))
                         _ind_t_end = np.argmin(np.abs(
-                            self.rec_t - _t_end)) + 2   # add frames to end
+                            rec_t - _t_end)) + 2   # add frames to end
 
                         # extract fluorescence
                         _f = np.mean(np.mean(
-                            self.rec[_ind_t_start:_ind_t_end,
+                            rec[_ind_t_start:_ind_t_end,
                                      _ind_x_lower:_ind_x_upper,
                                      _ind_y_lower:_ind_y_upper], axis=1),
                                      axis=1)
-                        _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+                        if _use_zscore:
+                            _baseline = _f[:n_frames_pre]
+                            _sigma = np.std(_baseline)
+                            _dff = (_f - np.mean(_baseline)) / _sigma \
+                                if _sigma > 0 else np.zeros_like(_f)
+                        else:
+                            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
 
                         if self.beh.stim.prob[trial] == 0:
                             self.sector.dff[n_x, n_y]['0'][
@@ -763,33 +806,35 @@ class TwoPRec(object):
                     _n_trace += 1
 
             print('\n')
-            # compute and plot cross-correlations
-            self.sector.resid_corr_stat = np.zeros(
-                (self.sector.n_sectors**2, self.sector.n_sectors**2))
-            self.sector.resid_corr_pval = np.zeros(
-                (self.sector.n_sectors**2, self.sector.n_sectors**2))
+            # compute cross-correlations (optional, expensive O(n_sectors^4))
+            if compute_resid_corr:
+                self.sector.resid_corr_stat = np.zeros(
+                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
+                self.sector.resid_corr_pval = np.zeros(
+                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
 
-            for sec_1 in range(self.sector.n_sectors**2):
-                for sec_2 in range(self.sector.n_sectors**2):
-                    sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
-                    sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
+                for sec_1 in range(self.sector.n_sectors**2):
+                    for sec_2 in range(self.sector.n_sectors**2):
+                        sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
+                        sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
 
-                    _sec_1_sig = np.mean(
-                        self.sector.dff_resid[sec_1_x, sec_1_y][
-                            resid_corr_tr_cond],
-                        axis=1)
-                    _sec_2_sig = np.mean(
-                        self.sector.dff_resid[sec_2_x, sec_2_y][
-                            resid_corr_tr_cond],
-                        axis=1)
+                        _sec_1_sig = np.mean(
+                            self.sector.dff_resid[sec_1_x, sec_1_y][
+                                resid_corr_tr_cond],
+                            axis=1)
+                        _sec_2_sig = np.mean(
+                            self.sector.dff_resid[sec_2_x, sec_2_y][
+                                resid_corr_tr_cond],
+                            axis=1)
 
-                    _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
-                    self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
-                    self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
+                        _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
+                        self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
+                        self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
 
             # add null distributions
             # -------------
-            self.add_null_dists(n_null=n_null, t_pre=t_pre, t_post=t_post)
+            if compute_null:
+                self.add_null_dists(n_null=n_null, t_pre=t_pre, t_post=t_post)
 
         # if not parsing by stimulusOrientation (special case):
         else:
@@ -800,6 +845,20 @@ class TwoPRec(object):
             n_frames_pre = int(t_pre * self.samp_rate)
             n_frames_post = int((2 + t_post) * self.samp_rate)
             n_frames_tot = n_frames_pre + n_frames_post
+
+            _use_zscore = use_zscore
+            if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
+                _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
+                _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
+                _probe = np.mean(np.mean(
+                    rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
+                _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
+                if np.abs(_f0_probe) < 1.0:
+                    print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
+                          'is near zero. Signal appears to be a corrected residual. '
+                          'Falling back to z-score. Pass use_zscore=True explicitly '
+                          'to suppress this check.')
+                    _use_zscore = True
 
             self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
             self.sector.dff_resid = np.empty((n_sectors, n_sectors),
@@ -823,13 +882,13 @@ class TwoPRec(object):
                 for n_y in range(n_sectors):
                     print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ')
                     # calculate location of sector
-                    _ind_x_lower = int((n_x / n_sectors) * self.rec.shape[1])
+                    _ind_x_lower = int((n_x / n_sectors) * rec.shape[1])
                     _ind_x_upper = int(((n_x+1) / n_sectors)
-                                       * self.rec.shape[1])
+                                       * rec.shape[1])
 
-                    _ind_y_lower = int((n_y / n_sectors) * self.rec.shape[1])
+                    _ind_y_lower = int((n_y / n_sectors) * rec.shape[1])
                     _ind_y_upper = int(((n_y+1) / n_sectors)
-                                       * self.rec.shape[1])
+                                       * rec.shape[1])
 
                     self.sector.x.lower[n_x, n_y] = _ind_x_lower
                     self.sector.x.upper[n_x, n_y] = _ind_x_upper
@@ -858,17 +917,23 @@ class TwoPRec(object):
                             'totalRewardTimes')[trial] + t_post
 
                         _ind_t_start = np.argmin(np.abs(
-                            self.rec_t - _t_start))
+                            rec_t - _t_start))
                         _ind_t_end = np.argmin(np.abs(
-                            self.rec_t - _t_end)) + 2   # add frames to end
+                            rec_t - _t_end)) + 2   # add frames to end
 
                         # extract fluorescence
                         _f = np.mean(np.mean(
-                            self.rec[_ind_t_start:_ind_t_end,
+                            rec[_ind_t_start:_ind_t_end,
                                      _ind_x_lower:_ind_x_upper,
                                      _ind_y_lower:_ind_y_upper], axis=1),
                                      axis=1)
-                        _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+                        if _use_zscore:
+                            _baseline = _f[:n_frames_pre]
+                            _sigma = np.std(_baseline)
+                            _dff = (_f - np.mean(_baseline)) / _sigma \
+                                if _sigma > 0 else np.zeros_like(_f)
+                        else:
+                            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
 
                         # save in self.sector.dff for the correct tr_cond
                         for _tr_cond in _tr_conds:
@@ -898,33 +963,35 @@ class TwoPRec(object):
                     _n_trace += 1
 
             print('\n')
-            # compute and plot cross-correlations
-            self.sector.resid_corr_stat = np.zeros(
-                (self.sector.n_sectors**2, self.sector.n_sectors**2))
-            self.sector.resid_corr_pval = np.zeros(
-                (self.sector.n_sectors**2, self.sector.n_sectors**2))
+            # compute cross-correlations (optional, expensive O(n_sectors^4))
+            if compute_resid_corr:
+                self.sector.resid_corr_stat = np.zeros(
+                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
+                self.sector.resid_corr_pval = np.zeros(
+                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
 
-            for sec_1 in range(self.sector.n_sectors**2):
-                for sec_2 in range(self.sector.n_sectors**2):
-                    sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
-                    sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
+                for sec_1 in range(self.sector.n_sectors**2):
+                    for sec_2 in range(self.sector.n_sectors**2):
+                        sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
+                        sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
 
-                    _sec_1_sig = np.mean(
-                        self.sector.dff_resid[sec_1_x, sec_1_y][
-                            resid_corr_tr_cond],
-                        axis=1)
-                    _sec_2_sig = np.mean(
-                        self.sector.dff_resid[sec_2_x, sec_2_y][
-                            resid_corr_tr_cond],
-                        axis=1)
+                        _sec_1_sig = np.mean(
+                            self.sector.dff_resid[sec_1_x, sec_1_y][
+                                resid_corr_tr_cond],
+                            axis=1)
+                        _sec_2_sig = np.mean(
+                            self.sector.dff_resid[sec_2_x, sec_2_y][
+                                resid_corr_tr_cond],
+                            axis=1)
 
-                    _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
-                    self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
-                    self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
+                        _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
+                        self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
+                        self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
 
             # add null distributions
             # -------------
-            self.add_null_dists(n_null=n_null, t_pre=t_pre, t_post=t_post)
+            if compute_null:
+                self.add_null_dists(n_null=n_null, t_pre=t_pre, t_post=t_post)
 
         return
 
@@ -2391,6 +2458,11 @@ class TwoPRec(object):
                                    'offset': 0.2}},
                     plt_prefix='',
                     plt_show=True,
+                    channel=None,
+                    use_zscore=False,
+                    outlier_thresh=None,
+                    auto_gain_dff=False,
+                    minimal_output=False,
                     colors=sns.cubehelix_palette(
                         n_colors=3,
                         start=2, rot=0,
@@ -2409,45 +2481,282 @@ class TwoPRec(object):
             elif plot_type == 'rew':
                 stim_list = ['0', '0.5_rew', '1']
         """
+        # resolve outlier threshold
+        if outlier_thresh is None:
+            outlier_thresh = 20 if use_zscore else 1
+
+        rec = self._get_rec(channel)
+        rec_t = self._get_rec_t(channel)
+
         print('creating trial-averaged signal (sectors)...')
         self.add_lickrates(t_prestim=t_pre,
                            t_poststim=t_post)
 
-        self.sector = SimpleNamespace()
+        # ---- n_frames must be known before the cache check ----
+        n_frames_pre = int(t_pre * self.samp_rate)
+        n_frames_post = int((2 + t_post) * self.samp_rate)
+        n_frames_tot = n_frames_pre + n_frames_post
 
-        self.sector.params = SimpleNamespace()
-        self.sector.n_sectors = n_sectors
-        self.sector.params.t_rew_pre = t_pre
-        self.sector.params.t_rew_post = t_post
-        self.sector.n_sectors = n_sectors
+        _use_zscore = use_zscore
+        if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
+            _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
+            _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
+            _probe = np.mean(np.mean(
+                rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
+            _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
+            if np.abs(_f0_probe) < 1.0:
+                print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
+                      'is near zero. Signal appears to be a corrected residual. '
+                      'Falling back to z-score. Pass use_zscore=True explicitly '
+                      'to suppress this check.')
+                _use_zscore = True
 
-        self.sector.colors = {'0': colors[0],
-                              '0.5': colors[1],
-                              '1': colors[2],
-                              '0.5_rew': colors[1],
-                              '0.5_norew': colors[1],
-                              '0.5_prelick': colors[1],
-                              '0.5_noprelick': colors[1]}
-        self.sector.linestyle = {'0': 'solid',
-                                 '0.5': 'solid',
-                                 '1': 'solid',
-                                 '0.5_rew': 'solid',
-                                 '0.5_norew': 'dashed',
-                                 '0.5_prelick': 'solid',
-                                 '0.5_noprelick': 'dashed'}
+        if _use_zscore and not auto_gain_dff:
+            auto_gain_dff = True
 
+        # compute whole-frame avg in case needed
+        if (not hasattr(self, 'frame')
+                or self.frame.params.use_zscore != _use_zscore
+                or self.frame.params.channel != channel):
+            self.add_frame(t_pre=t_pre, t_post=t_post,
+                           channel=channel, use_zscore=_use_zscore)
+
+        # determine stim_list once (needed by auto_gain_dff and plotting)
+        if plot_type is None:
+            stim_list = ['0', '0.5', '1']
+        elif plot_type == 'rew_norew':
+            stim_list = ['0.5_rew', '0.5_norew']
+        elif plot_type == 'prelick_noprelick':
+            stim_list = ['0.5_prelick', '0.5_noprelick']
+        elif plot_type == 'rew':
+            stim_list = ['0', '0.5_rew', '1']
+
+        # ---- check if sector data from add_sectors() can be reused ----
+        _sector_cache_valid = (
+            hasattr(self, 'sector')
+            and hasattr(self.sector, 'dff')
+            and hasattr(self.sector, 'params')
+            and self.sector.n_sectors == n_sectors
+            and self.sector.params.t_rew_pre == t_pre
+            and self.sector.params.t_rew_post == t_post
+            and self.sector.params.channel == channel
+            and self.sector.params.use_zscore == _use_zscore
+            and isinstance(self.sector.dff[0, 0], dict)
+        )
+
+        if _sector_cache_valid:
+            print('\treusing cached sector data from add_sectors()...')
+            self.sector.colors = {'0': colors[0],
+                                  '0.5': colors[1],
+                                  '1': colors[2],
+                                  '0.5_rew': colors[1],
+                                  '0.5_norew': colors[1],
+                                  '0.5_prelick': colors[1],
+                                  '0.5_noprelick': colors[1]}
+            self.sector.linestyle = {'0': 'solid',
+                                     '0.5': 'solid',
+                                     '1': 'solid',
+                                     '0.5_rew': 'solid',
+                                     '0.5_norew': 'dashed',
+                                     '0.5_prelick': 'solid',
+                                     '0.5_noprelick': 'dashed'}
+            self.sector.params.use_zscore = _use_zscore
+            if getattr(self.sector.params, 'resid_type', None) != resid_type:
+                print('\trecomputing residuals (resid_type changed)...')
+                for n_x in range(n_sectors):
+                    for n_y in range(n_sectors):
+                        for tr_cond in ['0', '0.5', '1']:
+                            for tr in range(
+                                    self.sector.dff[n_x, n_y][tr_cond].shape[0]):
+                                if resid_type == 'sector':
+                                    _dff_mean = np.mean(
+                                        self.sector.dff[n_x, n_y][tr_cond],
+                                        axis=0)
+                                elif resid_type == 'trial':
+                                    _dff_mean = self.frame.dff[tr_cond][tr, :]
+                                self.sector.dff_resid[n_x, n_y][tr_cond][tr, :] = (
+                                    self.sector.dff[n_x, n_y][tr_cond][tr, :]
+                                    - _dff_mean)
+                self.sector.params.resid_type = resid_type
+
+        else:
+            # ---- full extraction (cache miss) ----
+            self.sector = SimpleNamespace()
+
+            self.sector.params = SimpleNamespace()
+            self.sector.n_sectors = n_sectors
+            self.sector.params.t_rew_pre = t_pre
+            self.sector.params.t_rew_post = t_post
+            self.sector.params.channel = channel
+            self.sector.params.use_zscore = _use_zscore
+            self.sector.params.resid_type = resid_type
+            self.sector.n_sectors = n_sectors
+
+            self.sector.colors = {'0': colors[0],
+                                  '0.5': colors[1],
+                                  '1': colors[2],
+                                  '0.5_rew': colors[1],
+                                  '0.5_norew': colors[1],
+                                  '0.5_prelick': colors[1],
+                                  '0.5_noprelick': colors[1]}
+            self.sector.linestyle = {'0': 'solid',
+                                     '0.5': 'solid',
+                                     '1': 'solid',
+                                     '0.5_rew': 'solid',
+                                     '0.5_norew': 'dashed',
+                                     '0.5_prelick': 'solid',
+                                     '0.5_noprelick': 'dashed'}
+
+            self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
+            self.sector.dff_resid = np.empty((n_sectors, n_sectors), dtype=dict)
+
+            self.sector.t = np.linspace(
+                -1*t_pre, 2+t_post, n_frames_tot)
+
+            # store edges of sectors
+            self.sector.x = SimpleNamespace()
+            self.sector.x.lower = np.zeros((n_sectors, n_sectors))
+            self.sector.x.upper = np.zeros((n_sectors, n_sectors))
+            self.sector.y = SimpleNamespace()
+            self.sector.y.lower = np.zeros((n_sectors, n_sectors))
+            self.sector.y.upper = np.zeros((n_sectors, n_sectors))
+
+            # ---------------------
+            print('\textracting aligned fluorescence traces...')
+            _n_trace = 1
+            for n_x in range(n_sectors):
+                for n_y in range(n_sectors):
+                    print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ')
+                    # calculate location of sector
+                    _ind_x_lower = int((n_x / n_sectors) * rec.shape[1])
+                    _ind_x_upper = int(((n_x+1) / n_sectors) * rec.shape[1])
+
+                    _ind_y_lower = int((n_y / n_sectors) * rec.shape[1])
+                    _ind_y_upper = int(((n_y+1) / n_sectors) * rec.shape[1])
+
+                    self.sector.x.lower[n_x, n_y] = _ind_x_lower
+                    self.sector.x.upper[n_x, n_y] = _ind_x_upper
+                    self.sector.y.lower[n_x, n_y] = _ind_y_lower
+                    self.sector.y.upper[n_x, n_y] = _ind_y_upper
+
+                    # setup structure
+                    self.sector.dff[n_x, n_y] = {}
+                    self.sector.dff_resid[n_x, n_y] = {}
+
+                    for tr_cond in ['0', '0.5', '1', '0.5_rew',
+                                    '0.5_norew', '0.5_prelick', '0.5_noprelick']:
+                        self.sector.dff[n_x, n_y][tr_cond] = np.zeros((
+                            self.beh.tr_inds[tr_cond].shape[0], n_frames_tot))
+                        self.sector.dff_resid[n_x, n_y][tr_cond] = np.zeros_like(
+                            self.sector.dff[n_x, n_y][tr_cond])
+
+                    # store stim-aligned traces
+                    self.sector.tr_counts = {'0': 0, '0.5': 0, '1': 0,
+                                             '0.5_rew': 0, '0.5_norew': 0,
+                                             '0.5_prelick': 0,
+                                             '0.5_noprelick': 0}
+                    for trial in range(self.beh._stimrange.first,
+                                       self.beh._stimrange.last):
+                        print(f'\t\t\t{trial=}', end='\r')
+                        _t_stim = self.beh.stim.t_start[trial]
+                        _t_start = _t_stim - t_pre
+                        _t_end = self.beh._data.get_event_var(
+                            'totalRewardTimes')[trial] + t_post
+
+                        _ind_t_start = np.argmin(np.abs(
+                            rec_t - _t_start))
+                        _ind_t_end = np.argmin(np.abs(
+                            rec_t - _t_end)) + 2   # add frames to end
+
+                        # extract fluorescence
+                        _f = np.mean(np.mean(
+                            rec[_ind_t_start:_ind_t_end,
+                                     _ind_x_lower:_ind_x_upper,
+                                     _ind_y_lower:_ind_y_upper], axis=1),
+                                     axis=1)
+                        if _use_zscore:
+                            _baseline = _f[:n_frames_pre]
+                            _sigma = np.std(_baseline)
+                            _dff = (_f - np.mean(_baseline)) / _sigma \
+                                if _sigma > 0 else np.zeros_like(_f)
+                        else:
+                            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+
+                        if self.beh.stim.prob[trial] == 0:
+                            self.sector.dff[n_x, n_y]['0'][
+                                self.sector.tr_counts['0'], :] \
+                                = _dff[0:n_frames_tot]
+                            self.sector.tr_counts['0'] += 1
+                        elif self.beh.stim.prob[trial] == 0.5:
+                            self.sector.dff[n_x, n_y]['0.5'][
+                                self.sector.tr_counts['0.5'], :] \
+                                = _dff[0:n_frames_tot]
+                            self.sector.tr_counts['0.5'] += 1
+                        elif self.beh.stim.prob[trial] == 1:
+                            self.sector.dff[n_x, n_y]['1'][
+                                self.sector.tr_counts['1'], :] \
+                                = _dff[0:n_frames_tot]
+                            self.sector.tr_counts['1'] += 1
+
+                        if self.beh.stim.prob[trial] == 0.5 \
+                           and self.beh.rew.delivered[trial] == 1:
+                            self.sector.dff[n_x, n_y]['0.5_rew'][
+                                self.sector.tr_counts['0.5_rew'], :] \
+                                = _dff[0:n_frames_tot]
+                            self.sector.tr_counts['0.5_rew'] += 1
+                        elif self.beh.stim.prob[trial] == 0.5 \
+                             and self.beh.rew.delivered[trial] == 0:
+                            self.sector.dff[n_x, n_y]['0.5_norew'][
+                                self.sector.tr_counts['0.5_norew'], :] \
+                                = _dff[0:n_frames_tot]
+                            self.sector.tr_counts['0.5_norew'] += 1
+
+                        if self.beh.stim.prob[trial] == 0.5 \
+                           and self.beh.lick.antic_raw[trial] > 0:
+                            self.sector.dff[n_x, n_y]['0.5_prelick'][
+                                self.sector.tr_counts['0.5_prelick'], :] \
+                                = _dff[0:n_frames_tot]
+                            self.sector.tr_counts['0.5_prelick'] += 1
+                        elif self.beh.stim.prob[trial] == 0.5 \
+                             and self.beh.lick.antic_raw[trial] == 0:
+                            self.sector.dff[n_x, n_y]['0.5_noprelick'][
+                                self.sector.tr_counts['0.5_noprelick'], :] \
+                                = _dff[0:n_frames_tot]
+                            self.sector.tr_counts['0.5_noprelick'] += 1
+
+                    # store dff residuals
+                    # ----------
+                    for tr_cond in ['0', '0.5', '1']:
+                        for tr in range(
+                                self.sector.dff[n_x, n_y][tr_cond].shape[0]):
+                            if resid_type == 'sector':
+                                _dff_mean = np.mean(
+                                    self.sector.dff[n_x, n_y][tr_cond], axis=0)
+                            elif resid_type == 'trial':
+                                _dff_mean = self.frame.dff[tr_cond][tr, :]
+
+                            self.sector.dff_resid[n_x, n_y][tr_cond][tr, :] \
+                                = self.sector.dff[n_x, n_y][tr_cond][tr, :] \
+                                - _dff_mean
+
+                    _n_trace += 1
+
+        # ---- figure creation ----
         fig_avg = plt.figure(figsize=figsize)
-        fig_resid = plt.figure(figsize=figsize)
         spec_avg = gs.GridSpec(nrows=1, ncols=1,
                                figure=fig_avg)
-        spec_resid = gs.GridSpec(nrows=1, ncols=1,
-                                 figure=fig_resid)
-
         ax_img = fig_avg.add_subplot(spec_avg[0, 0])
-        ax_img_resid = fig_resid.add_subplot(spec_resid[0, 0])
+
+        fig_resid = None
+        ax_img_resid = None
+        if not minimal_output:
+            fig_resid = plt.figure(figsize=figsize)
+            spec_resid = gs.GridSpec(nrows=1, ncols=1,
+                                     figure=fig_resid)
+            ax_img_resid = fig_resid.add_subplot(spec_resid[0, 0])
 
         print('\tcreating max projection image...')
-        _rec_max = np.max(self.rec[::img_ds_factor, :, :], axis=0)
+        _rec_max = np.max(rec[::img_ds_factor, :, :], axis=0)
         _rec_max[:, ::int(_rec_max.shape[0]/n_sectors)] = 0
         _rec_max[::int(_rec_max.shape[0]/n_sectors), :] = 0
 
@@ -2455,149 +2764,33 @@ class TwoPRec(object):
                       extent=[0, n_sectors,
                               n_sectors, 0],
                       alpha=img_alpha)
-        ax_img_resid.imshow(_rec_max,
-                            extent=[0, n_sectors,
-                                    n_sectors, 0],
-                            alpha=img_alpha)
-        ax_img_resid.set_title(f'residuals vs mean({resid_type}),'
-                               + f' p(rew)={resid_tr_cond}')
+        if not minimal_output:
+            ax_img_resid.imshow(_rec_max,
+                                extent=[0, n_sectors,
+                                        n_sectors, 0],
+                                alpha=img_alpha)
+            ax_img_resid.set_title(f'residuals vs mean({resid_type}),'
+                                   + f' p(rew)={resid_tr_cond}')
 
-        # setup stim-aligned traces
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int((2 + t_post) * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
+        # ---- auto-gain: set y-gain from global max across all sectors ----
+        if auto_gain_dff:
+            _max_pos = 0.0
+            for _gx in range(n_sectors):
+                for _gy in range(n_sectors):
+                    for _sc in stim_list:
+                        if _sc in self.sector.dff[_gx, _gy]:
+                            _med = np.median(
+                                self.sector.dff[_gx, _gy][_sc], axis=0)
+                            _max_pos = max(_max_pos, float(np.max(_med)))
+            if _max_pos > 0:
+                _offset = plt_dff['y']['offset']
+                plt_dff = dict(plt_dff)
+                plt_dff['y'] = dict(plt_dff['y'])
+                plt_dff['y']['gain'] = (1.0 - _offset) / _max_pos
 
-        self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
-        self.sector.dff_resid = np.empty((n_sectors, n_sectors), dtype=dict)
-
-        self.sector.t = np.linspace(
-            -1*t_pre, 2+t_post, n_frames_tot)
-
-        # store edges of sectors
-        self.sector.x = SimpleNamespace()
-        self.sector.x.lower = np.zeros((n_sectors, n_sectors))
-        self.sector.x.upper = np.zeros((n_sectors, n_sectors))
-        self.sector.y = SimpleNamespace()
-        self.sector.y.lower = np.zeros((n_sectors, n_sectors))
-        self.sector.y.upper = np.zeros((n_sectors, n_sectors))
-
-        # compute whole-frame avg in case needed
-        if not hasattr(self, 'frame'):
-            self.plt_stim_aligned_avg(t_pre=t_pre, t_post=t_post, plt_show=False)
-
-        # ---------------------
-        print('\textracting aligned fluorescence traces...')
-        _n_trace = 1
+        # ---- PASS 2: plot all sectors ----
         for n_x in range(n_sectors):
             for n_y in range(n_sectors):
-                print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ')
-                # calculate location of sector
-                _ind_x_lower = int((n_x / n_sectors) * self.rec.shape[1])
-                _ind_x_upper = int(((n_x+1) / n_sectors) * self.rec.shape[1])
-
-                _ind_y_lower = int((n_y / n_sectors) * self.rec.shape[1])
-                _ind_y_upper = int(((n_y+1) / n_sectors) * self.rec.shape[1])
-
-                self.sector.x.lower[n_x, n_y] = _ind_x_lower
-                self.sector.x.upper[n_x, n_y] = _ind_x_upper
-                self.sector.y.lower[n_x, n_y] = _ind_y_lower
-                self.sector.y.upper[n_x, n_y] = _ind_y_upper
-
-                # setup structure
-                self.sector.dff[n_x, n_y] = {}
-                self.sector.dff_resid[n_x, n_y] = {}
-
-                for tr_cond in ['0', '0.5', '1', '0.5_rew',
-                                '0.5_norew', '0.5_prelick', '0.5_noprelick']:
-                    self.sector.dff[n_x, n_y][tr_cond] = np.zeros((
-                        self.beh.tr_inds[tr_cond].shape[0], n_frames_tot))
-                    self.sector.dff_resid[n_x, n_y][tr_cond] = np.zeros_like(
-                        self.sector.dff[n_x, n_y][tr_cond])
-
-                # store stim-aligned traces
-                self.sector.tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                                         '0.5_rew': 0, '0.5_norew': 0,
-                                         '0.5_prelick': 0,
-                                         '0.5_noprelick': 0}
-                for trial in range(self.beh._stimrange.first,
-                                   self.beh._stimrange.last):
-                    print(f'\t\t\t{trial=}', end='\r')
-                    _t_stim = self.beh.stim.t_start[trial]
-                    _t_start = _t_stim - t_pre
-                    _t_end = self.beh._data.get_event_var(
-                        'totalRewardTimes')[trial] + t_post
-
-                    _ind_t_start = np.argmin(np.abs(
-                        self.rec_t - _t_start))
-                    _ind_t_end = np.argmin(np.abs(
-                        self.rec_t - _t_end)) + 2   # add frames to end
-
-                    # extract fluorescence
-                    _f = np.mean(np.mean(
-                        self.rec[_ind_t_start:_ind_t_end,
-                                 _ind_x_lower:_ind_x_upper,
-                                 _ind_y_lower:_ind_y_upper], axis=1),
-                                 axis=1)
-                    _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-                    # _dff_shifted = (-1 * _dff * plt_dff['y']['gain']) \
-                    #     + n_y - plt_dff['y']['offset'] + 1
-
-                    if self.beh.stim.prob[trial] == 0:
-                        self.sector.dff[n_x, n_y]['0'][
-                            self.sector.tr_counts['0'], :] \
-                            = _dff[0:n_frames_tot]
-                        self.sector.tr_counts['0'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5:
-                        self.sector.dff[n_x, n_y]['0.5'][
-                            self.sector.tr_counts['0.5'], :] \
-                            = _dff[0:n_frames_tot]
-                        self.sector.tr_counts['0.5'] += 1
-                    elif self.beh.stim.prob[trial] == 1:
-                        self.sector.dff[n_x, n_y]['1'][
-                            self.sector.tr_counts['1'], :] \
-                            = _dff[0:n_frames_tot]
-                        self.sector.tr_counts['1'] += 1
-
-                    if self.beh.stim.prob[trial] == 0.5 \
-                       and self.beh.rew.delivered[trial] == 1:
-                        self.sector.dff[n_x, n_y]['0.5_rew'][
-                            self.sector.tr_counts['0.5_rew'], :] \
-                            = _dff[0:n_frames_tot]
-                        self.sector.tr_counts['0.5_rew'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5 \
-                         and self.beh.rew.delivered[trial] == 0:
-                        self.sector.dff[n_x, n_y]['0.5_norew'][
-                            self.sector.tr_counts['0.5_norew'], :] \
-                            = _dff[0:n_frames_tot]
-                        self.sector.tr_counts['0.5_norew'] += 1
-
-                    if self.beh.stim.prob[trial] == 0.5 \
-                       and self.beh.lick.antic_raw[trial] > 0:
-                        self.sector.dff[n_x, n_y]['0.5_prelick'][
-                            self.sector.tr_counts['0.5_prelick'], :] \
-                            = _dff[0:n_frames_tot]
-                        self.sector.tr_counts['0.5_prelick'] += 1
-                    elif self.beh.stim.prob[trial] == 0.5 \
-                         and self.beh.lick.antic_raw[trial] == 0:
-                        self.sector.dff[n_x, n_y]['0.5_noprelick'][
-                            self.sector.tr_counts['0.5_noprelick'], :] \
-                            = _dff[0:n_frames_tot]
-                        self.sector.tr_counts['0.5_noprelick'] += 1
-
-                # store dff residuals
-                # ----------
-                for tr_cond in ['0', '0.5', '1']:
-                    for tr in range(
-                            self.sector.dff[n_x, n_y][tr_cond].shape[0]):
-                        if resid_type == 'sector':
-                            _dff_mean = np.mean(
-                                self.sector.dff[n_x, n_y][tr_cond], axis=0)
-                        elif resid_type == 'trial':
-                            _dff_mean = self.frame.dff[tr_cond][tr, :]
-
-                        self.sector.dff_resid[n_x, n_y][tr_cond][tr, :] \
-                            = self.sector.dff[n_x, n_y][tr_cond][tr, :] \
-                            - _dff_mean
 
                 # **************************
                 # plotting for this sector
@@ -2609,43 +2802,37 @@ class TwoPRec(object):
                              * plt_dff['x']['gain'])
                 _t_sector = _t_sector + n_x + plt_dff['x']['offset']
 
-                if plot_type is None:
-                    stim_list = ['0', '0.5', '1']
-                elif plot_type == 'rew_norew':
-                    stim_list = ['0.5_rew', '0.5_norew']
-                elif plot_type == 'prelick_noprelick':
-                    stim_list = ['0.5_prelick', '0.5_noprelick']
-                elif plot_type == 'rew':
-                    stim_list = ['0', '0.5_rew', '1']
-
                 for stim_cond in stim_list:
-                    _dff_mean = np.mean(self.sector.dff[n_x, n_y][stim_cond],
-                                        axis=0)
+                    _dff_mean = np.median(self.sector.dff[n_x, n_y][stim_cond],
+                                          axis=0)
                     _dff_shifted = (-1 * _dff_mean * plt_dff['y']['gain']) \
                         + n_y - plt_dff['y']['offset'] + 1
 
-                    ax_img.plot(
-                        _t_sector, _dff_shifted,
-                        color=self.sector.colors[stim_cond],
-                        linestyle=self.sector.linestyle[stim_cond])
+                    if np.max(np.abs(_dff_mean)) < outlier_thresh:
+                        ax_img.plot(
+                            _t_sector, _dff_shifted,
+                            color=self.sector.colors[stim_cond],
+                            linestyle=self.sector.linestyle[stim_cond])
 
-                # make residuals plot
+                # make residuals plot (skip in minimal mode)
                 # ------------------------
-                _n_tr_resid = self.sector.dff_resid[n_x, n_y][
-                    resid_tr_cond].shape[0]
-                for trial in range(_n_tr_resid):
-                    _dff = self.sector.dff_resid[n_x, n_y][resid_tr_cond][trial, :]
-                    if resid_smooth is True:
-                        _dff = sp.signal.savgol_filter(_dff, resid_smooth_windlen,
-                                                       resid_smooth_polyorder)
-                    _dff_shifted = (-1 * _dff * plt_dff['y']['gain']) \
-                        + n_y - plt_dff['y']['offset'] + 1
+                if not minimal_output:
+                    _n_tr_resid = self.sector.dff_resid[n_x, n_y][
+                        resid_tr_cond].shape[0]
+                    for trial in range(_n_tr_resid):
+                        _dff = self.sector.dff_resid[n_x, n_y][resid_tr_cond][trial, :]
+                        if resid_smooth is True:
+                            _dff = sp.signal.savgol_filter(_dff, resid_smooth_windlen,
+                                                           resid_smooth_polyorder)
+                        _dff_shifted = (-1 * _dff * plt_dff['y']['gain']) \
+                            + n_y - plt_dff['y']['offset'] + 1
 
-                    ax_img_resid.plot(
-                        _t_sector, _dff_shifted,
-                        color=sns.color_palette('rocket', _n_tr_resid)[trial],
-                        alpha=resid_alpha,
-                        linestyle=self.sector.linestyle[stim_cond])
+                        if np.max(np.abs(_dff)) < outlier_thresh:
+                            ax_img_resid.plot(
+                                _t_sector, _dff_shifted,
+                                color=sns.color_palette('rocket', _n_tr_resid)[trial],
+                                alpha=resid_alpha,
+                                linestyle=self.sector.linestyle[stim_cond])
 
                 # plot rew and stim lines
                 # ------------
@@ -2656,217 +2843,233 @@ class TwoPRec(object):
                     + n_x + plt_dff['x']['offset']
                 _dff_zero = n_y - plt_dff['y']['offset'] + 1
 
-                for ax in [ax_img, ax_img_resid]:
-                    ax.plot([_t_stim, _t_stim],
+                ax_img.plot([_t_stim, _t_stim],
                             [n_y + 0.2, n_y + 0.8],
                             color=sns.xkcd_rgb['dark grey'],
                             linewidth=1,
                             linestyle='dashed')
-                    ax.plot([_t_rew, _t_rew],
+                ax_img.plot([_t_rew, _t_rew],
                             [n_y + 0.2, n_y + 0.8],
                             color=sns.xkcd_rgb['bright blue'],
                             linewidth=1,
                             linestyle='dashed')
+                if not minimal_output and ax_img_resid is not None:
+                    ax_img_resid.plot([_t_stim, _t_stim],
+                                      [n_y + 0.2, n_y + 0.8],
+                                      color=sns.xkcd_rgb['dark grey'],
+                                      linewidth=1,
+                                      linestyle='dashed')
+                    ax_img_resid.plot([_t_rew, _t_rew],
+                                      [n_y + 0.2, n_y + 0.8],
+                                      color=sns.xkcd_rgb['bright blue'],
+                                      linewidth=1,
+                                      linestyle='dashed')
+                    ax_img_resid.plot([_t_stim, _t_rew],
+                                      [_dff_zero, _dff_zero],
+                                      color='k',
+                                      linewidth=1,
+                                      linestyle='dashed')
 
-                ax_img_resid.plot([_t_stim, _t_rew],
-                                  [_dff_zero, _dff_zero],
-                                  color='k',
-                                  linewidth=1,
-                                  linestyle='dashed')
+        corr_suffix = ''
+        if channel == 'grn' and hasattr(self, 'rec_t_grn') \
+           and hasattr(self, 'corr_sig_method'):
+            corr_suffix = f'_corr={self.corr_sig_method}'
+        zscore_suffix = f'_zscore={_use_zscore}'
 
-                # update _n_trace
-                _n_trace += 1
-
-        # compute supplemental plots on data in self.sector.dff_resid
-        # ---------------
-        n_trs = self.sector.dff_resid[0, 0][resid_tr_cond].shape[0]
-        n_rows = np.ceil(np.sqrt(n_trs)).astype(int)
-
-        fig_norm_sec_sig = plt.figure(figsize=(3.43, 1.5))
-        spec_norm_sec_sig = gs.GridSpec(nrows=1, ncols=3,
-                                        figure=fig_norm_sec_sig)
-        ax_norm_sec_sig_prew = {}
-        ax_norm_sec_sig_prew['0'] = fig_norm_sec_sig.add_subplot(
-            spec_norm_sec_sig[0, 0])
-        ax_norm_sec_sig_prew['0.5'] = fig_norm_sec_sig.add_subplot(
-            spec_norm_sec_sig[0, 1])
-        ax_norm_sec_sig_prew['1'] = fig_norm_sec_sig.add_subplot(
-            spec_norm_sec_sig[0, 2])
-
-        fig_resid_corr = plt.figure(figsize=figsize)
-        spec_resid_corr = gs.GridSpec(nrows=1, ncols=1,
-                                      figure=fig_resid_corr)
-        ax_resid_corr = fig_resid_corr.add_subplot(spec_resid_corr[0, 0])
-
-        fig_resid_corr_spatial = plt.figure(figsize=figsize)
-        spec_resid_corr_spatial = gs.GridSpec(
-            nrows=self.sector.n_sectors,
-            ncols=self.sector.n_sectors,
-            figure=fig_resid_corr_spatial)
-
-        fig_resid_tr_sep = plt.figure(figsize=figsize)
-        spec_resid_tr_sep = gs.GridSpec(nrows=n_rows,
-                                        ncols=n_rows,
-                                        figure=fig_resid_tr_sep)
-
-        # compute and plot trial-averaged, normalized signals for each sector
-        for sec in range(self.sector.n_sectors):
-            sec_x, sec_y = np.divmod(sec, self.sector.n_sectors)
-
-            for tr_type in ['0', '0.5', '1']:
-                _n_tr = self.sector.dff[0, 0][tr_type].shape[0]
-                _sec_max = np.max(self.sector.dff[sec_x, sec_y][tr_type],
-                                  axis=1)
-                _sec_sig = np.array([self.sector.dff[sec_x, sec_y][tr_type][
-                    tr, :] / _sec_max[tr] for tr in range(_n_tr)])
-                _sec_sig_travg = np.mean(_sec_sig, axis=0)
-                ax_norm_sec_sig_prew[tr_type].plot(
-                    self.sector.t,
-                    _sec_sig_travg,
-                    color=self.sector.colors[tr_type],
-                    alpha=0.8)
-
-        # compute and plot cross-correlations
-        self.sector.resid_corr_stat = np.zeros(
-            (self.sector.n_sectors**2, self.sector.n_sectors**2))
-        self.sector.resid_corr_pval = np.zeros(
-            (self.sector.n_sectors**2, self.sector.n_sectors**2))
-
-        for sec_1 in range(self.sector.n_sectors**2):
-            for sec_2 in range(self.sector.n_sectors**2):
-                sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
-                sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
-
-                _sec_1_sig = np.mean(
-                    self.sector.dff_resid[sec_1_x, sec_1_y][resid_tr_cond],
-                    axis=1)
-                _sec_2_sig = np.mean(
-                    self.sector.dff_resid[sec_2_x, sec_2_y][resid_tr_cond],
-                    axis=1)
-
-                _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
-                self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
-                self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
-
-        ax_resid_corr.imshow(self.sector.resid_corr_stat)
-
-        ax_residcorr_spatial = []
-        ax_count = 0
-        for sec_1 in range(self.sector.n_sectors):
-            for sec_2 in range(self.sector.n_sectors):
-                ax_residcorr_spatial.append(
-                    fig_resid_corr_spatial.add_subplot(
-                        spec_resid_corr_spatial[sec_1, sec_2]))
-                ax_residcorr_spatial[ax_count].imshow(
-                    self.sector.resid_corr_stat[ax_count, :].reshape(
-                        self.sector.n_sectors, self.sector.n_sectors),
-                    vmax=1, vmin=-1, cmap='coolwarm')
-                ax_residcorr_spatial[ax_count].set_xticks([])
-                ax_residcorr_spatial[ax_count].set_yticks([])
-
-                ax_count += 1
-
-        fig_resid_corr_spatial.suptitle('residual corrs (spatial), '
-                                        + f' {resid_tr_cond=},'
-                                        + f' residuals vs mean({resid_type})')
-
-        # compute and plot per-trial residual distributions
-        ax = []
-        for tr in range(n_trs):
-            # compile response of all sectors for this trial
-            _sector_dff_resid = []
-            for sec_1 in range(self.sector.n_sectors):
-                for sec_2 in range(self.sector.n_sectors):
-                    _sector_dff_resid.append(np.mean(
-                        self.sector.dff_resid[sec_1, sec_2][
-                            resid_tr_cond][tr, :]))
-
-            # set up axis
-            _tr_x, _tr_y = np.divmod(tr, n_rows)
-            if tr == 0:
-                ax.append(fig_resid_tr_sep.add_subplot(
-                    spec_resid_tr_sep[_tr_x, _tr_y]))
-            elif tr > 0:
-                ax.append(fig_resid_tr_sep.add_subplot(
-                    spec_resid_tr_sep[_tr_x, _tr_y],
-                          sharex=ax[0], sharey=ax[0]))
-
-            # plot per-trial distributions
-            ax[tr].hist(_sector_dff_resid, bins=resid_trial_nbins,
-                        histtype='step',
-                        density=True, color=sns.xkcd_rgb['dark grey'])
-            ax[tr].axvline(0, color='k',
-                           linewidth=1,
-                           linestyle='dashed')
-            ax[tr].set_xlabel('dff resid.')
-            ax[tr].set_ylabel('pdf')
-            ax[tr].set_title(f'trial={tr}')
-        fig_resid_tr_sep.suptitle(f'residuals vs mean{resid_type} corrs (spatial), '
-                                        + f' {resid_tr_cond=},'
-                                        + f' residuals vs mean({resid_type})')
-
-        # save all figs
-        # -------------
+        # save main figure
         fig_avg.savefig(os.path.join(
             os.getcwd(), 'figs_mbl',
             'sectors_'
             + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
             + f'{plt_prefix}_'
             + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'ch={self.ch_img}.pdf'))
+            + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
 
-        fig_norm_sec_sig.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            'sectors_normed_'
-            + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plt_prefix}_'
-            + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'ch={self.ch_img}.pdf'))
+        # compute and save supplemental plots (skip in minimal mode)
+        # ---------------
+        if not minimal_output:
+            n_trs = self.sector.dff_resid[0, 0][resid_tr_cond].shape[0]
+            n_rows = np.ceil(np.sqrt(n_trs)).astype(int)
 
-        fig_resid.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            'sectors_resid_'
-            + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plt_prefix}_'
-            + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'{resid_tr_cond=}_{resid_type=}_'
-            + f'ch={self.ch_img}.pdf'))
+            fig_norm_sec_sig = plt.figure(figsize=(3.43, 1.5))
+            spec_norm_sec_sig = gs.GridSpec(nrows=1, ncols=3,
+                                            figure=fig_norm_sec_sig)
+            ax_norm_sec_sig_prew = {}
+            ax_norm_sec_sig_prew['0'] = fig_norm_sec_sig.add_subplot(
+                spec_norm_sec_sig[0, 0])
+            ax_norm_sec_sig_prew['0.5'] = fig_norm_sec_sig.add_subplot(
+                spec_norm_sec_sig[0, 1])
+            ax_norm_sec_sig_prew['1'] = fig_norm_sec_sig.add_subplot(
+                spec_norm_sec_sig[0, 2])
 
-        fig_resid_corr.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            'sectors_resid_corr_'
-            + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plt_prefix}_'
-            + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'{resid_tr_cond=}_{resid_type=}_'
-            + f'ch={self.ch_img}.pdf'))
+            fig_resid_corr = plt.figure(figsize=figsize)
+            spec_resid_corr = gs.GridSpec(nrows=1, ncols=1,
+                                          figure=fig_resid_corr)
+            ax_resid_corr = fig_resid_corr.add_subplot(spec_resid_corr[0, 0])
 
-        fig_resid_corr_spatial.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            'sectors_resid_corr_spatial_'
-            + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plt_prefix}_'
-            + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'{resid_tr_cond=}_{resid_type=}_'
-            + f'ch={self.ch_img}.pdf'))
+            fig_resid_corr_spatial = plt.figure(figsize=figsize)
+            spec_resid_corr_spatial = gs.GridSpec(
+                nrows=self.sector.n_sectors,
+                ncols=self.sector.n_sectors,
+                figure=fig_resid_corr_spatial)
 
-        fig_resid_tr_sep.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            'sectors_resid_trial_sep_'
-            + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plt_prefix}_'
-            + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'{resid_tr_cond=}_{resid_type=}_'
-            + f'ch={self.ch_img}.pdf'))
+            fig_resid_tr_sep = plt.figure(figsize=figsize)
+            spec_resid_tr_sep = gs.GridSpec(nrows=n_rows,
+                                            ncols=n_rows,
+                                            figure=fig_resid_tr_sep)
 
-        # show all plots
+            # compute and plot trial-averaged, normalized signals for each sector
+            for sec in range(self.sector.n_sectors):
+                sec_x, sec_y = np.divmod(sec, self.sector.n_sectors)
+
+                for tr_type in ['0', '0.5', '1']:
+                    _n_tr = self.sector.dff[0, 0][tr_type].shape[0]
+                    _sec_max = np.max(self.sector.dff[sec_x, sec_y][tr_type],
+                                      axis=1)
+                    _sec_sig = np.array([self.sector.dff[sec_x, sec_y][tr_type][
+                        tr, :] / _sec_max[tr] for tr in range(_n_tr)])
+                    _sec_sig_travg = np.mean(_sec_sig, axis=0)
+                    ax_norm_sec_sig_prew[tr_type].plot(
+                        self.sector.t,
+                        _sec_sig_travg,
+                        color=self.sector.colors[tr_type],
+                        alpha=0.8)
+
+            # compute and plot cross-correlations
+            self.sector.resid_corr_stat = np.zeros(
+                (self.sector.n_sectors**2, self.sector.n_sectors**2))
+            self.sector.resid_corr_pval = np.zeros(
+                (self.sector.n_sectors**2, self.sector.n_sectors**2))
+
+            for sec_1 in range(self.sector.n_sectors**2):
+                for sec_2 in range(self.sector.n_sectors**2):
+                    sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
+                    sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
+
+                    _sec_1_sig = np.mean(
+                        self.sector.dff_resid[sec_1_x, sec_1_y][resid_tr_cond],
+                        axis=1)
+                    _sec_2_sig = np.mean(
+                        self.sector.dff_resid[sec_2_x, sec_2_y][resid_tr_cond],
+                        axis=1)
+
+                    _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
+                    self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
+                    self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
+
+            ax_resid_corr.imshow(self.sector.resid_corr_stat)
+
+            ax_residcorr_spatial = []
+            ax_count = 0
+            for sec_1 in range(self.sector.n_sectors):
+                for sec_2 in range(self.sector.n_sectors):
+                    ax_residcorr_spatial.append(
+                        fig_resid_corr_spatial.add_subplot(
+                            spec_resid_corr_spatial[sec_1, sec_2]))
+                    ax_residcorr_spatial[ax_count].imshow(
+                        self.sector.resid_corr_stat[ax_count, :].reshape(
+                            self.sector.n_sectors, self.sector.n_sectors),
+                        vmax=1, vmin=-1, cmap='coolwarm')
+                    ax_residcorr_spatial[ax_count].set_xticks([])
+                    ax_residcorr_spatial[ax_count].set_yticks([])
+
+                    ax_count += 1
+
+            fig_resid_corr_spatial.suptitle('residual corrs (spatial), '
+                                            + f' {resid_tr_cond=},'
+                                            + f' residuals vs mean({resid_type})')
+
+            # compute and plot per-trial residual distributions
+            ax = []
+            for tr in range(n_trs):
+                # compile response of all sectors for this trial
+                _sector_dff_resid = []
+                for sec_1 in range(self.sector.n_sectors):
+                    for sec_2 in range(self.sector.n_sectors):
+                        _sector_dff_resid.append(np.mean(
+                            self.sector.dff_resid[sec_1, sec_2][
+                                resid_tr_cond][tr, :]))
+
+                # set up axis
+                _tr_x, _tr_y = np.divmod(tr, n_rows)
+                if tr == 0:
+                    ax.append(fig_resid_tr_sep.add_subplot(
+                        spec_resid_tr_sep[_tr_x, _tr_y]))
+                elif tr > 0:
+                    ax.append(fig_resid_tr_sep.add_subplot(
+                        spec_resid_tr_sep[_tr_x, _tr_y],
+                              sharex=ax[0], sharey=ax[0]))
+
+                # plot per-trial distributions
+                ax[tr].hist(_sector_dff_resid, bins=resid_trial_nbins,
+                            histtype='step',
+                            density=True, color=sns.xkcd_rgb['dark grey'])
+                ax[tr].axvline(0, color='k',
+                               linewidth=1,
+                               linestyle='dashed')
+                ax[tr].set_xlabel('dff resid.')
+                ax[tr].set_ylabel('pdf')
+                ax[tr].set_title(f'trial={tr}')
+            fig_resid_tr_sep.suptitle(f'residuals vs mean{resid_type} corrs (spatial), '
+                                            + f' {resid_tr_cond=},'
+                                            + f' residuals vs mean({resid_type})')
+
+            # save supplemental figs
+            fig_norm_sec_sig.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                'sectors_normed_'
+                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{plt_prefix}_'
+                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
+                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
+
+            fig_resid.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                'sectors_resid_'
+                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{plt_prefix}_'
+                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
+                + f'{resid_tr_cond=}_{resid_type=}_'
+                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
+
+            fig_resid_corr.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                'sectors_resid_corr_'
+                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{plt_prefix}_'
+                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
+                + f'{resid_tr_cond=}_{resid_type=}_'
+                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
+
+            fig_resid_corr_spatial.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                'sectors_resid_corr_spatial_'
+                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{plt_prefix}_'
+                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
+                + f'{resid_tr_cond=}_{resid_type=}_'
+                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
+
+            fig_resid_tr_sep.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                'sectors_resid_trial_sep_'
+                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{plt_prefix}_'
+                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
+                + f'{resid_tr_cond=}_{resid_type=}_'
+                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
+
+        # show/close plots
         if plt_show is True:
             plt.show()
         elif plt_show is False:
-            for _fig in [fig_avg, fig_norm_sec_sig, fig_resid,
-                         fig_resid_corr, fig_resid_corr_spatial,
-                         fig_resid_tr_sep]:
-                plt.close(_fig)
+            plt.close(fig_avg)
+            if not minimal_output:
+                for _fig in [fig_norm_sec_sig, fig_resid,
+                             fig_resid_corr, fig_resid_corr_spatial,
+                             fig_resid_tr_sep]:
+                    if _fig is not None:
+                        plt.close(_fig)
 
         return
 
