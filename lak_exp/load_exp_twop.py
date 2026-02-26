@@ -415,7 +415,50 @@ class TwoPRec(object):
 
         return
 
-    def add_frame(self, t_pre=2, t_post=5):
+    def _get_rec(self, channel=None):
+        """
+        Returns the recording array. In the base class there is only a single
+        channel, so ``channel`` is accepted but ignored.
+
+        Subclasses (e.g. TwoPRec_DualColour) override this to select between
+        red and green channels.
+
+        Parameters
+        ----------
+        channel : str or None
+            Ignored in the base class. Pass 'red' or 'grn' when using a
+            subclass that supports dual-colour recordings.
+
+        Returns
+        -------
+        np.ndarray
+            The recording array (self.rec).
+        """
+        return self.rec
+
+    def _get_rec_t(self, channel=None):
+        """
+        Returns the timestamp array for the recording. In the base class there
+        is only a single set of timestamps, so ``channel`` is accepted but
+        ignored.
+
+        Subclasses (e.g. TwoPRec_DualColour) override this to return
+        channel-specific timestamps when they differ (e.g. after signal
+        correction that truncates the green channel).
+
+        Parameters
+        ----------
+        channel : str or None
+            Ignored in the base class.
+
+        Returns
+        -------
+        np.ndarray
+            The timestamp array (self.rec_t).
+        """
+        return self.rec_t
+
+    def add_frame(self, t_pre=2, t_post=5, channel=None):
 
         """
         Plots the average fluorescence across the whole fov,
@@ -426,6 +469,11 @@ class TwoPRec(object):
             rew_norew: plots 0.5_rew, 0.5_norew
             prelick_noprelick: plots 0.5_prelick, 0.5_noprelick
 
+        Parameters
+        ----------
+        channel : str or None
+            Passed to _get_rec() / _get_rec_t(). Ignored in the base class;
+            used by TwoPRec_DualColour to select the channel.
         """
         print('creating trial-averaged signal (whole-frame)...')
 
@@ -471,6 +519,7 @@ class TwoPRec(object):
                     n_null=500,
                     resid_type='sector',
                     resid_corr_tr_cond='1',
+                    channel=None,
                     colors=sns.cubehelix_palette(
                         n_colors=3,
                         start=2, rot=0,
@@ -488,6 +537,12 @@ class TwoPRec(object):
                 stim_list = ['0.5_prelick', '0.5_noprelick']
             elif plot_type == 'rew':
                 stim_list = ['0', '0.5_rew', '1']
+
+        Parameters
+        ----------
+        channel : str or None
+            Passed to _get_rec() / _get_rec_t(). Ignored in the base class;
+            used by TwoPRec_DualColour to select the channel.
         """
         # compute whole-frame avg in case needed
         if not hasattr(self, 'frame'):
