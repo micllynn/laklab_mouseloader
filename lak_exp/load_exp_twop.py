@@ -17,13 +17,18 @@ import zetapy
 import os
 import pathlib
 import tifffile
+import warnings
 
 from .align_imgbeh import Aligner_ImgBeh
-from .utils import find_event_onsets_autothresh, remove_lick_artefact_after_rew, \
-    check_folder_exists
+from .utils import find_event_onsets_autothresh, \
+    remove_lick_artefact_after_rew, check_folder_exists
 from .utils_twop import XMLParser, calc_dff
-from .beh import BehDataSimpleLoad, StimParser
+from .beh import BehDataSimpleLoad, StimParser, StimParserNew
 from . import signal_correction
+
+# Suppress NumPy RuntimeWarnings in this module.
+warnings.filterwarnings(
+    "ignore", category=RuntimeWarning, module=r"^numpy(\.|$)")
 
 
 class TwoPRec(object):
@@ -39,6 +44,7 @@ class TwoPRec(object):
                  rec_type='trig_rew',
                  parse_stims=True,
                  parse_by='stimulusOrientation',
+                 subtypes=None,
                  trial_conditions=None,
                  n_px_remove_sides=10):
         """
@@ -103,43 +109,22 @@ class TwoPRec(object):
 
         # setup names of folders, files, and ops
         # --------------
+        self.ch_img = ch_img
+        self.trial_end = trial_end
+
         self._init_folders(enclosing_folder, folder_beh, folder_img,
                            dset_obj, dset_ind)
-        self.ch_img = ch_img
         self._init_ops(n_px_remove_sides, rec_type)
-
-        # get filename of image of the appropriate channel
-        list_img = os.listdir(self.folder.img)
-        if fname_img is None:
-            for _fname in list_img:
-                if f'Ch{ch_img}.tif' in _fname and 'compiled' in _fname:
-                    self.fname_img = _fname
-        else:
-            self.fname_img = fname_img
 
         # load behavioral data
         # -------------
-        self._init_behavior(parse_stims=parse_stims, parse_by=parse_by)
+        self._init_behavior(parse_stims=parse_stims, parse_by=parse_by,
+                            subtypes=subtypes)
 
-        # load imaging data
+        # load imaging data (single or dual-colour)
         # ------------
-        print('loading imaging...')
-        for _file in os.listdir(self.folder.img):
-            if _file.endswith('BACKUP.xml'):
-                try:
-                    xmlobj = XMLParser(os.path.join(self.folder.img, _file))
-                    sampling_rate = xmlobj.get_framerate()
-                    print(f'\tframerate is {sampling_rate:.2f}Hz')
-                except:
-                    print('could not parse framerate from BACKUP.xml')
-                    pass
-        self.samp_rate = sampling_rate
-
-        print('\tloading tiff...')
-        self.rec = tifffile.memmap(os.path.join(
-            self.folder.img, self.fname_img))[
-            :, n_px_remove_sides:-1*n_px_remove_sides,
-                n_px_remove_sides:-1*n_px_remove_sides]
+        self._init_recording(fname_img=fname_img, dset_obj=dset_obj,
+                             n_px_remove_sides=n_px_remove_sides)
 
         # try to load suite2p output if available
         self._init_suite2p()
@@ -154,69 +139,8 @@ class TwoPRec(object):
 
         # compute trial indices for each trtype
         # -------------------
-        self.beh.tr_inds = {}
-        # Standard case: visual stimuli
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
-            self.beh.tr_conds = ['0', '0.5', '1', '0.5_rew', '0.5_norew']
-
-            self.beh.tr_inds['0'] = np.where(self.beh.stim.prob == 0)[0]
-            self.beh.tr_inds['0.5'] = np.where(self.beh.stim.prob == 0.5)[0]
-            self.beh.tr_inds['1'] = np.where(self.beh.stim.prob == 1)[0]
-            self.beh.tr_inds['0.5_rew'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.rew.delivered == True))[0]
-            self.beh.tr_inds['0.5_norew'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.rew.delivered == False))[0]
-
-            # remove trinds outside of correct range
-            for tr_cond in ['0', '0.5', '1', '0.5_rew', '0.5_norew']:
-                self.beh.tr_inds[tr_cond] = np.delete(
-                    self.beh.tr_inds[tr_cond],
-                    ~np.isin(self.beh.tr_inds[tr_cond],
-                             np.arange(
-                                 self.beh._stimrange.first,
-                                 self.beh._stimrange.last+1)))
-            # add lickrates
-            # ----------------
-            self.add_lickrates()
-
-            self.beh.tr_inds['0.5_prelick'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw > 0))[0]
-            self.beh.tr_inds['0.5_noprelick'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw == 0))[0]
-            for tr_cond in ['0.5_prelick', '0.5_noprelick']:
-                self.beh.tr_inds[tr_cond] = np.delete(
-                    self.beh.tr_inds[tr_cond],
-                    ~np.isin(self.beh.tr_inds[tr_cond],
-                             np.arange(
-                                 self.beh._stimrange.first,
-                                 self.beh._stimrange.last+1)))
-        # Other visual stimuli
-        else:
-            self.beh.tr_conds = self.beh._stimparser.parsed_param.astype(str)
-            self.beh.tr_conds_outcome = (self.beh._stimparser.prob
-                                         * self.beh._stimparser.size)
-
-            for tr_cond in self.beh.tr_conds:
-                self.beh.tr_inds[str(tr_cond)] = np.where(
-                    self.beh._stimparser._all_parsed_param == int(tr_cond))[0]
-
-            # remove trinds outside of correct range
-            for tr_cond in self.beh.tr_conds:
-                self.beh.tr_inds[tr_cond] = np.delete(
-                    self.beh.tr_inds[tr_cond],
-                    ~np.isin(self.beh.tr_inds[tr_cond],
-                             np.arange(
-                                 self.beh._stimrange.first,
-                                 self.beh._stimrange.last+1)))
-            # add lickrates
-            # ----------------
-            self.add_lickrates()
-
-        # build _trial_cond_map: maps each trial index -> list of condition keys
-        self._trial_cond_map = {}
-        for _cond, _inds in self.beh.tr_inds.items():
-            for _idx in _inds:
-                self._trial_cond_map.setdefault(int(_idx), []).append(_cond)
+        self._init_trial_conditions(
+            use_int_cast=getattr(self, '_trial_cond_use_int_cast', True))
         return
 
     # ------------------------------------------------------------------
@@ -257,7 +181,8 @@ class TwoPRec(object):
         self.ops.n_px_remove_sides = n_px_remove_sides
         self.ops.rec_type = rec_type
 
-    def _init_behavior(self, parse_stims=True, parse_by='stimulusOrientation'):
+    def _init_behavior(self, parse_stims=True, parse_by='stimulusOrientation',
+                       subtypes=None):
         """Load behavioral data into self.beh from self.folder.beh.
 
         Populates self.beh.rew, self.beh.stim, and self.beh.lick.
@@ -281,7 +206,9 @@ class TwoPRec(object):
 
         self.beh.stim.t_start = self.beh._data.get_event_var(
             'stimulusOnTimes')
-        self.beh.stim.stimlist = StimParser(self.beh, parse_by=parse_by)
+        self.beh.stim.stimlist = StimParserNew(self.beh, parse_by=parse_by,
+                                               subtypes=subtypes)
+        self.beh._stimparser = self.beh.stim.stimlist
 
         self.beh.stim.prob = self.beh.stim.stimlist._all_stimprobs
         self.beh.stim.size = self.beh.stim.stimlist._all_stimsizes
@@ -387,7 +314,206 @@ class TwoPRec(object):
             self.beh._stimrange.last = trial_end
             self.beh._rewrange.last = trial_end
 
-    # ------------------------------------------------------------------
+    # ----------------------
+    # internal methods called by user-facing class methods
+    # ----------------------
+    def _get_rec(self, channel=None):
+        """
+        Helper method to get the appropriate recording based on channel.
+
+        Parameters
+        ----------
+        channel : str or None
+            'red' or 'grn' (default: None -> self.rec if present).
+
+        Returns
+        -------
+        np.ndarray
+            The recording array for the specified channel.
+        """
+        if channel is None:
+            return self.rec
+        if channel == 'red' and hasattr(self, 'rec_red'):
+            return self.rec_red
+        if channel == 'grn' and hasattr(self, 'rec_grn'):
+            return self.rec_grn
+        if channel in ('red', 'grn'):
+            return self.rec
+        raise ValueError(f"channel must be 'red' or 'grn', got '{channel}'")
+
+    def _get_rec_t(self, channel=None):
+        """
+        Helper method to get the appropriate timestamps based on channel.
+
+        Parameters
+        ----------
+        channel : str or None
+            'red' or 'grn' (default: None -> self.rec_t).
+
+        Returns
+        -------
+        np.ndarray
+            The timestamp array for the specified channel.
+        """
+        if channel is None:
+            return self.rec_t
+        if channel == 'red':
+            return self.rec_t
+        if channel == 'grn':
+            if hasattr(self, 'rec_t_grn'):
+                return self.rec_t_grn
+            return self.rec_t
+        raise ValueError(f"channel must be 'red' or 'grn', got '{channel}'")
+
+    def _load_sampling_rate_from_backup_xml(self):
+        """Parse sampling rate from BACKUP.xml in the imaging folder."""
+        sampling_rate = None
+        for _file in os.listdir(self.folder.img):
+            if _file.endswith('BACKUP.xml'):
+                try:
+                    xmlobj = XMLParser(os.path.join(self.folder.img, _file))
+                    sampling_rate = xmlobj.get_framerate()
+                    print(f'\tframerate is {sampling_rate:.2f}Hz')
+                except Exception:
+                    print('could not parse framerate from BACKUP.xml')
+        return sampling_rate
+
+    def _init_recording(self, fname_img=None, dset_obj=None,
+                        n_px_remove_sides=10, **kwargs):
+        """Load imaging data for a single-channel recording."""
+        # get filename of image of the appropriate channel
+        list_img = os.listdir(self.folder.img)
+        self.fname_img = self._resolve_channel_filename(
+            list_img, self.ch_img, fname_img=fname_img,
+            dset_obj=dset_obj, use_dataset_default=False)
+
+        print('loading imaging...')
+        self.samp_rate = self._load_sampling_rate_from_backup_xml()
+
+        print('\tloading tiff...')
+        self.rec = tifffile.memmap(os.path.join(
+            self.folder.img, self.fname_img))[
+            :, n_px_remove_sides:-1*n_px_remove_sides,
+                n_px_remove_sides:-1*n_px_remove_sides]
+
+    def _resolve_channel_filename(self, list_img, ch_img,
+                                  fname_img=None,
+                                  dset_obj=None,
+                                  use_dataset_default=False):
+        """Resolve tiff filename for a channel
+        with optional dataset defaults."""
+        if fname_img is not None:
+            return fname_img
+        if use_dataset_default and dset_obj is not None:
+            return f'compiled_Ch{ch_img}.tif'
+        for _fname in list_img:
+            if f'Ch{ch_img}.tif' in _fname and 'compiled' in _fname:
+                return _fname
+        return None
+
+    def _filter_trial_inds_to_stimrange(self, tr_inds):
+        """Filter trial indices to the current stim range."""
+        _valid = np.arange(self.beh._stimrange.first,
+                           self.beh._stimrange.last + 1)
+        return np.delete(tr_inds, ~np.isin(tr_inds, _valid))
+
+    def _init_trial_conditions(self, use_int_cast=False):
+        """Initialize trial conditions, trial indices, and _trial_cond_map."""
+        self.beh.tr_inds = {}
+        if self.beh._stimparser.parse_by == 'stimulusOrientation':
+            self.beh.tr_conds = ['0', '0.5', '1', '0.5_rew', '0.5_norew']
+
+            self.beh.tr_inds['0'] = np.where(self.beh.stim.prob == 0)[0]
+            self.beh.tr_inds['0.5'] = np.where(self.beh.stim.prob == 0.5)[0]
+            self.beh.tr_inds['1'] = np.where(self.beh.stim.prob == 1)[0]
+            self.beh.tr_inds['0.5_rew'] = np.where(np.logical_and(
+                self.beh.stim.prob == 0.5, self.beh.rew.delivered == True))[0]
+            self.beh.tr_inds['0.5_norew'] = np.where(np.logical_and(
+                self.beh.stim.prob == 0.5, self.beh.rew.delivered == False))[0]
+
+            for tr_cond in self.beh.tr_conds:
+                self.beh.tr_inds[tr_cond] = \
+                    self._filter_trial_inds_to_stimrange(
+                        self.beh.tr_inds[tr_cond])
+
+            self.add_lickrates()
+
+            self.beh.tr_inds['0.5_prelick'] = np.where(np.logical_and(
+                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw > 0))[0]
+            self.beh.tr_inds['0.5_noprelick'] = np.where(np.logical_and(
+                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw == 0))[0]
+            for tr_cond in ['0.5_prelick', '0.5_noprelick']:
+                self.beh.tr_inds[tr_cond] = \
+                    self._filter_trial_inds_to_stimrange(
+                        self.beh.tr_inds[tr_cond])
+        else:
+            self.beh.tr_conds = self.beh._stimparser.parsed_param.astype(str)
+            self.beh.tr_conds_outcome = (self.beh._stimparser.prob
+                                         * self.beh._stimparser.size)
+
+            for param_val in self.beh._stimparser.parsed_param:
+                match_val = int(param_val) if use_int_cast else param_val
+                self.beh.tr_inds[str(param_val)] = np.where(
+                    self.beh._stimparser._all_parsed_param == match_val)[0]
+
+            for tr_cond in self.beh.tr_conds:
+                self.beh.tr_inds[tr_cond] = \
+                    self._filter_trial_inds_to_stimrange(
+                        self.beh.tr_inds[tr_cond])
+
+            self.add_lickrates()
+
+        # append any subtypes defined in StimParserNew
+        _sp = self.beh._stimparser
+        if hasattr(_sp, 'subtype_tr_inds') and _sp.subtype_tr_inds:
+            for _label, _inds in _sp.subtype_tr_inds.items():
+                self.beh.tr_inds[_label] = \
+                    self._filter_trial_inds_to_stimrange(_inds)
+
+        self._trial_cond_map = {}
+        for _cond, _inds in self.beh.tr_inds.items():
+            for _idx in _inds:
+                self._trial_cond_map.setdefault(int(_idx), []).append(_cond)
+
+    def _aligned_frame_params(self, t_pre, t_post, t_event=2):
+        """Compute frame counts and time vector for aligned traces."""
+        n_frames_pre = int(t_pre * self.samp_rate)
+        n_frames_post = int((t_event + t_post) * self.samp_rate)
+        n_frames_tot = n_frames_pre + n_frames_post
+        t_vec = np.linspace(-1*t_pre, t_event + t_post, n_frames_tot)
+        return n_frames_pre, n_frames_post, n_frames_tot, t_vec
+
+    def _init_dff_by_cond(self, tr_conds, n_frames_tot):
+        """Initialize a dict of dff arrays keyed by trial condition."""
+        return {
+            _tr_cond: np.zeros((
+                self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
+            for _tr_cond in tr_conds
+        }
+
+    def _bin_trials_by_iti(self, itis, n_time_divs):
+        """Bin trials by ITI and return bin edges and masks."""
+        _count, t_bin_edges = np.histogram(itis, bins=n_time_divs)
+        masks = []
+        for ind_timediv in range(n_time_divs):
+            masks.append(np.logical_and(
+                itis > t_bin_edges[ind_timediv],
+                itis < t_bin_edges[ind_timediv+1]))
+        return t_bin_edges, masks
+
+    def _finish_plot(self, fig, ax, xlabel, ylabel,
+                     savepath=None, show=True):
+        """Finalize a plot with labels and optional save/show."""
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        if savepath is not None:
+            fig.savefig(savepath)
+        if show:
+            plt.show()
+
+    # ------------------------------------
+    # basic class methods for analyzing/plotting frames, neurs, sectors
+    # -------------------------------------
 
     def add_lickrates(self, t_prestim=2,
                       t_poststim=5,
@@ -457,49 +583,6 @@ class TwoPRec(object):
 
         return
 
-    def _get_rec(self, channel=None):
-        """
-        Returns the recording array. In the base class there is only a single
-        channel, so ``channel`` is accepted but ignored.
-
-        Subclasses (e.g. TwoPRec_DualColour) override this to select between
-        red and green channels.
-
-        Parameters
-        ----------
-        channel : str or None
-            Ignored in the base class. Pass 'red' or 'grn' when using a
-            subclass that supports dual-colour recordings.
-
-        Returns
-        -------
-        np.ndarray
-            The recording array (self.rec).
-        """
-        return self.rec
-
-    def _get_rec_t(self, channel=None):
-        """
-        Returns the timestamp array for the recording. In the base class there
-        is only a single set of timestamps, so ``channel`` is accepted but
-        ignored.
-
-        Subclasses (e.g. TwoPRec_DualColour) override this to return
-        channel-specific timestamps when they differ (e.g. after signal
-        correction that truncates the green channel).
-
-        Parameters
-        ----------
-        channel : str or None
-            Ignored in the base class.
-
-        Returns
-        -------
-        np.ndarray
-            The timestamp array (self.rec_t).
-        """
-        return self.rec_t
-
     def add_frame(self, t_pre=2, t_post=5, channel=None, use_zscore=False):
 
         """
@@ -519,7 +602,8 @@ class TwoPRec(object):
         use_zscore : bool
             If True, compute z-scored fluorescence (baseline mean and std over
             the pre-stimulus window) instead of df/f. If False (default), df/f
-            is used unless the baseline is near zero (corrected residual signal),
+            is used unless the baseline is near zero
+            (corrected residual signal),
             in which case z-score is applied automatically with a warning.
         """
         _ch_str = f', ch={channel}' if channel is not None else ''
@@ -539,54 +623,40 @@ class TwoPRec(object):
         self.frame.params.use_zscore = use_zscore
 
         # setup stim-aligned traces
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int((2 + t_post) * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
+        n_frames_pre, n_frames_post, n_frames_tot, t_vec = \
+            self._aligned_frame_params(t_pre, t_post, t_event=2)
 
-        self.frame.dff = {}
-        for _cond in self.beh.tr_inds:
-            self.frame.dff[_cond] = np.zeros((
-                self.beh.tr_inds[_cond].shape[0], n_frames_tot))
-        self.frame.t = np.linspace(-1*t_pre, 2+t_post, n_frames_tot)
-        self.frame.tr_counts = {k: 0 for k in self.beh.tr_inds}
+        self.frame.dff = self._init_dff_by_cond(
+            self.beh.tr_conds, n_frames_tot)
+        self.frame.t = t_vec
+        self.frame.tr_counts = {k: 0 for k in self.beh.tr_conds}
 
-        # Auto-detect near-zero baseline (corrected residual signal) and fall
-        # back to z-score with a warning rather than dividing by ~0.
-        _use_zscore = use_zscore
-        if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
-            _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
-            _ind0 = np.searchsorted(rec_t, _t0 - t_pre)
-            _probe = np.mean(np.mean(
-                rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
-            _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
-            if np.abs(_f0_probe) < 1.0:
-                print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
-                      'is near zero. Signal appears to be a corrected residual. '
-                      'Falling back to z-score. Pass use_zscore=True explicitly '
-                      'to suppress this check.')
-                _use_zscore = True
-
-        _trials = np.arange(self.beh._stimrange.first, self.beh._stimrange.last)
+        _trials = np.arange(self.beh._stimrange.first,
+                            self.beh._stimrange.last)
         _all_ind_t_start = np.searchsorted(
             rec_t, self.beh.stim.t_start[_trials] - t_pre)
-        for _i, trial in enumerate(_trials):
-            print(f'\t{trial=}', end='\r')
-            _ind_t_start = _all_ind_t_start[_i]
+        for tr_ind, trial in enumerate(_trials):
+            print(f'\ttrial={int(trial)}', end='\r')
+            _ind_t_start = _all_ind_t_start[tr_ind]
             _f = np.mean(np.mean(
                 rec[_ind_t_start:_ind_t_start + n_frames_tot, :, :],
                 axis=1), axis=1)
-            if _use_zscore:
+            if use_zscore:
                 _baseline = _f[:n_frames_pre]
                 _sigma = np.std(_baseline)
                 _dff = (_f - np.mean(_baseline)) / _sigma \
                     if _sigma > 0 else np.zeros_like(_f)
             else:
                 _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-            for _cond in self._trial_cond_map.get(int(trial), []):
-                if _cond in self.frame.dff:
-                    self.frame.dff[_cond][
-                        self.frame.tr_counts[_cond], :] = _dff[0:n_frames_tot]
-                    self.frame.tr_counts[_cond] += 1
+
+            for _tr_cond in self._trial_cond_map.get(int(trial), []):
+                if _tr_cond in self.frame.dff:
+                    self.frame.dff[_tr_cond][
+                        self.frame.tr_counts[_tr_cond], :] = \
+                        _dff[0:n_frames_tot]
+                    self.frame.tr_counts[_tr_cond] += 1
+        print('')
+        return
 
     def add_sectors(self,
                     n_sectors=10,
@@ -601,7 +671,12 @@ class TwoPRec(object):
                     colors=sns.cubehelix_palette(
                         n_colors=3,
                         start=2, rot=0,
-                        dark=0.2, light=0.8)):
+                        dark=0.2, light=0.8),
+                    orientation_extra_tr_conds=('0.5_prelick',
+                                                '0.5_noprelick'),
+                    orientation_colors=None,
+                    orientation_linestyle=None,
+                    orientation_resid_tr_conds=('0', '0.5', '1')):
         """
         Divides the field of view into sectors, and plots a set of trial-types
         separately within each sector.
@@ -621,6 +696,18 @@ class TwoPRec(object):
         channel : str or None
             Passed to _get_rec() / _get_rec_t(). Ignored in the base class;
             used by TwoPRec_DualColour to select the channel.
+        orientation_extra_tr_conds : tuple[str, ...]
+            Additional trial-condition keys to include when parse_by is
+            'stimulusOrientation'. Defaults to prelick/no-prelick subsets.
+        orientation_colors : dict or None
+            Optional per-condition color mapping for
+            'stimulusOrientation'. If None, defaults are used.
+        orientation_linestyle : dict or None
+            Optional per-condition linestyle mapping for
+            'stimulusOrientation'. If None, defaults are used.
+        orientation_resid_tr_conds : tuple[str, ...] or None
+            Trial conditions to use for residual computation when parse_by is
+            'stimulusOrientation'. If None, all extracted conditions are used.
         """
         self.add_lickrates(t_prestim=t_pre,
                            t_poststim=t_post)
@@ -650,369 +737,214 @@ class TwoPRec(object):
         self.sector.params.use_zscore = use_zscore
         self.sector.params.resid_type = resid_type
 
-        self.sector.colors = {'0': colors[0],
-                              '0.5': colors[1],
-                              '1': colors[2],
-                              '0.5_rew': colors[1],
-                              '0.5_norew': colors[1],
-                              '0.5_prelick': colors[1],
-                              '0.5_noprelick': colors[1]}
-        self.sector.linestyle = {'0': 'solid',
-                                 '0.5': 'solid',
-                                 '1': 'solid',
-                                 '0.5_rew': 'solid',
-                                 '0.5_norew': 'dashed',
-                                 '0.5_prelick': 'solid',
-                                 '0.5_noprelick': 'dashed'}
+        is_stimulus_orientation = (
+            self.beh._stimparser.parse_by == 'stimulusOrientation')
+        _tr_conds = list(self.beh.tr_conds)
+        if is_stimulus_orientation:
+            for _tr_cond in orientation_extra_tr_conds:
+                if (_tr_cond in self.beh.tr_inds
+                        and _tr_cond not in _tr_conds):
+                    _tr_conds.append(_tr_cond)
 
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
-
-            # setup stim-aligned traces
-            n_frames_pre = int(t_pre * self.samp_rate)
-            n_frames_post = int((2 + t_post) * self.samp_rate)
-            n_frames_tot = n_frames_pre + n_frames_post
-
-            _use_zscore = use_zscore
-            if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
-                _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
-                _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
-                _probe = np.mean(np.mean(
-                    rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
-                _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
-                if np.abs(_f0_probe) < 1.0:
-                    print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
-                          'is near zero. Signal appears to be a corrected residual. '
-                          'Falling back to z-score. Pass use_zscore=True explicitly '
-                          'to suppress this check.')
-                    _use_zscore = True
-
-            self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
-            self.sector.dff_resid = np.empty((n_sectors, n_sectors),
-                                             dtype=dict)
-
-            self.sector.t = np.linspace(
-                -1*t_pre, 2+t_post, n_frames_tot)
-
-            # store edges of sectors
-            self.sector.x = SimpleNamespace()
-            self.sector.x.lower = np.zeros((n_sectors, n_sectors), dtype=int)
-            self.sector.x.upper = np.zeros((n_sectors, n_sectors), dtype=int)
-            self.sector.y = SimpleNamespace()
-            self.sector.y.lower = np.zeros((n_sectors, n_sectors), dtype=int)
-            self.sector.y.upper = np.zeros((n_sectors, n_sectors), dtype=int)
-
-            # ---------------------
-            print('\textracting aligned fluorescence traces...')
-            _n_trace = 1
-            for n_x in range(n_sectors):
-                for n_y in range(n_sectors):
-                    print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ')
-                    # calculate location of sector
-                    _ind_x_lower = int((n_x / n_sectors) * rec.shape[1])
-                    _ind_x_upper = int(((n_x+1) / n_sectors)
-                                       * rec.shape[1])
-
-                    _ind_y_lower = int((n_y / n_sectors) * rec.shape[1])
-                    _ind_y_upper = int(((n_y+1) / n_sectors)
-                                       * rec.shape[1])
-
-                    self.sector.x.lower[n_x, n_y] = _ind_x_lower
-                    self.sector.x.upper[n_x, n_y] = _ind_x_upper
-                    self.sector.y.lower[n_x, n_y] = _ind_y_lower
-                    self.sector.y.upper[n_x, n_y] = _ind_y_upper
-
-                    # setup structure
-                    self.sector.dff[n_x, n_y] = {}
-                    self.sector.dff_resid[n_x, n_y] = {}
-
-                    for tr_cond in ['0', '0.5', '1', '0.5_rew',
-                                    '0.5_norew', '0.5_prelick',
-                                    '0.5_noprelick']:
-                        self.sector.dff[n_x, n_y][tr_cond] = np.zeros((
-                            self.beh.tr_inds[tr_cond].shape[0], n_frames_tot))
-                        self.sector.dff_resid[n_x, n_y][tr_cond] \
-                            = np.zeros_like(
-                                self.sector.dff[n_x, n_y][tr_cond])
-
-                    # store stim-aligned traces
-                    self.sector.tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                                             '0.5_rew': 0, '0.5_norew': 0,
-                                             '0.5_prelick': 0,
-                                             '0.5_noprelick': 0}
-                    for trial in range(self.beh._stimrange.first,
-                                       self.beh._stimrange.last):
-                        print(f'\t\t\t{trial=}', end='\r')
-                        _t_stim = self.beh.stim.t_start[trial]
-                        _t_start = _t_stim - t_pre
-                        _t_end = self.beh._data.get_event_var(
-                            'totalRewardTimes')[trial] + t_post
-
-                        _ind_t_start = np.argmin(np.abs(
-                            rec_t - _t_start))
-                        _ind_t_end = np.argmin(np.abs(
-                            rec_t - _t_end)) + 2   # add frames to end
-
-                        # extract fluorescence
-                        _f = np.mean(np.mean(
-                            rec[_ind_t_start:_ind_t_end,
-                                     _ind_x_lower:_ind_x_upper,
-                                     _ind_y_lower:_ind_y_upper], axis=1),
-                                     axis=1)
-                        if _use_zscore:
-                            _baseline = _f[:n_frames_pre]
-                            _sigma = np.std(_baseline)
-                            _dff = (_f - np.mean(_baseline)) / _sigma \
-                                if _sigma > 0 else np.zeros_like(_f)
-                        else:
-                            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                        if self.beh.stim.prob[trial] == 0:
-                            self.sector.dff[n_x, n_y]['0'][
-                                self.sector.tr_counts['0'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0'] += 1
-                        elif self.beh.stim.prob[trial] == 0.5:
-                            self.sector.dff[n_x, n_y]['0.5'][
-                                self.sector.tr_counts['0.5'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5'] += 1
-                        elif self.beh.stim.prob[trial] == 1:
-                            self.sector.dff[n_x, n_y]['1'][
-                                self.sector.tr_counts['1'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['1'] += 1
-
-                        if self.beh.stim.prob[trial] == 0.5 \
-                           and self.beh.rew.delivered[trial] == 1:
-                            self.sector.dff[n_x, n_y]['0.5_rew'][
-                                self.sector.tr_counts['0.5_rew'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_rew'] += 1
-                        elif self.beh.stim.prob[trial] == 0.5 \
-                             and self.beh.rew.delivered[trial] == 0:
-                            self.sector.dff[n_x, n_y]['0.5_norew'][
-                                self.sector.tr_counts['0.5_norew'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_norew'] += 1
-
-                        if self.beh.stim.prob[trial] == 0.5 \
-                           and self.beh.lick.antic_raw[trial] > 0:
-                            self.sector.dff[n_x, n_y]['0.5_prelick'][
-                                self.sector.tr_counts['0.5_prelick'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_prelick'] += 1
-                        elif self.beh.stim.prob[trial] == 0.5 \
-                             and self.beh.lick.antic_raw[trial] == 0:
-                            self.sector.dff[n_x, n_y]['0.5_noprelick'][
-                                self.sector.tr_counts['0.5_noprelick'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_noprelick'] += 1
-
-                    # store dff residuals
-                    # ----------
-                    for tr_cond in ['0', '0.5', '1']:
-                        for tr in range(
-                                self.sector.dff[n_x, n_y][tr_cond].shape[0]):
-                            if resid_type == 'sector':
-                                _dff_mean = np.mean(
-                                    self.sector.dff[n_x, n_y][tr_cond], axis=0)
-                            elif resid_type == 'trial':
-                                _dff_mean = self.frame.dff[tr_cond][tr, :]
-
-                            self.sector.dff_resid[n_x, n_y][tr_cond][tr, :] \
-                                = self.sector.dff[n_x, n_y][tr_cond][tr, :] \
-                                - _dff_mean
-
-                    # update _n_trace
-                    _n_trace += 1
-
-            print('\n')
-            # compute cross-correlations (optional, expensive O(n_sectors^4))
-            if compute_resid_corr:
-                self.sector.resid_corr_stat = np.zeros(
-                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
-                self.sector.resid_corr_pval = np.zeros(
-                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
-
-                for sec_1 in range(self.sector.n_sectors**2):
-                    for sec_2 in range(self.sector.n_sectors**2):
-                        sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
-                        sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
-
-                        _sec_1_sig = np.mean(
-                            self.sector.dff_resid[sec_1_x, sec_1_y][
-                                resid_corr_tr_cond],
-                            axis=1)
-                        _sec_2_sig = np.mean(
-                            self.sector.dff_resid[sec_2_x, sec_2_y][
-                                resid_corr_tr_cond],
-                            axis=1)
-
-                        _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
-                        self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
-                        self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
-
-            # add null distributions
-            # -------------
-            if compute_null:
-                self.add_null_dists(n_null=n_null, t_pre=t_pre, t_post=t_post)
-
-        # if not parsing by stimulusOrientation (special case):
+        if is_stimulus_orientation and orientation_resid_tr_conds is not None:
+            _resid_tr_conds = [
+                _tr_cond for _tr_cond in orientation_resid_tr_conds
+                if _tr_cond in _tr_conds]
+            if len(_resid_tr_conds) == 0:
+                _resid_tr_conds = list(_tr_conds)
         else:
-            _tr_conds = self.beh.tr_conds
-            _all_trs_cond = self.beh._stimparser._all_parsed_param
+            _resid_tr_conds = list(_tr_conds)
 
-            # setup stim-aligned traces
-            n_frames_pre = int(t_pre * self.samp_rate)
-            n_frames_post = int((2 + t_post) * self.samp_rate)
-            n_frames_tot = n_frames_pre + n_frames_post
+        self.sector.params.tr_conds = tuple(_tr_conds)
+        self.sector.params.resid_tr_conds = tuple(_resid_tr_conds)
 
-            _use_zscore = use_zscore
-            if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
-                _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
-                _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
-                _probe = np.mean(np.mean(
-                    rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
-                _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
-                if np.abs(_f0_probe) < 1.0:
-                    print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
-                          'is near zero. Signal appears to be a corrected residual. '
-                          'Falling back to z-score. Pass use_zscore=True explicitly '
-                          'to suppress this check.')
-                    _use_zscore = True
+        self.sector.colors = {
+            _tr_cond: colors[ind % len(colors)]
+            for ind, _tr_cond in enumerate(_tr_conds)}
+        self.sector.linestyle = {_tr_cond: 'solid' for _tr_cond in _tr_conds}
 
-            self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
-            self.sector.dff_resid = np.empty((n_sectors, n_sectors),
-                                             dtype=dict)
+        if is_stimulus_orientation:
+            _orientation_colors = orientation_colors
+            if _orientation_colors is None:
+                _orientation_colors = {'0': colors[0],
+                                       '0.5': colors[1],
+                                       '1': colors[2],
+                                       '0.5_rew': colors[1],
+                                       '0.5_norew': colors[1],
+                                       '0.5_prelick': colors[1],
+                                       '0.5_noprelick': colors[1]}
+            _orientation_linestyle = orientation_linestyle
+            if _orientation_linestyle is None:
+                _orientation_linestyle = {'0': 'solid',
+                                          '0.5': 'solid',
+                                          '1': 'solid',
+                                          '0.5_rew': 'solid',
+                                          '0.5_norew': 'dashed',
+                                          '0.5_prelick': 'solid',
+                                          '0.5_noprelick': 'dashed'}
+            for _tr_cond, _color in _orientation_colors.items():
+                if _tr_cond in self.sector.colors:
+                    self.sector.colors[_tr_cond] = _color
+            for _tr_cond, _linestyle in _orientation_linestyle.items():
+                if _tr_cond in self.sector.linestyle:
+                    self.sector.linestyle[_tr_cond] = _linestyle
 
-            self.sector.t = np.linspace(
-                -1*t_pre, 2+t_post, n_frames_tot)
+        # setup stim-aligned traces
+        n_frames_pre, n_frames_post, n_frames_tot, t_vec = \
+            self._aligned_frame_params(t_pre, t_post, t_event=2)
 
-            # store edges of sectors
-            self.sector.x = SimpleNamespace()
-            self.sector.x.lower = np.zeros((n_sectors, n_sectors), dtype=int)
-            self.sector.x.upper = np.zeros((n_sectors, n_sectors), dtype=int)
-            self.sector.y = SimpleNamespace()
-            self.sector.y.lower = np.zeros((n_sectors, n_sectors), dtype=int)
-            self.sector.y.upper = np.zeros((n_sectors, n_sectors), dtype=int)
+        _use_zscore = use_zscore
+        if not _use_zscore and \
+           self.beh._stimrange.first < self.beh._stimrange.last:
+            _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
+            _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
+            _probe = np.mean(np.mean(
+                rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
+            _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
+            if np.abs(_f0_probe) < 1.0:
+                print(f'\tWarning: baseline fluorescence mean '
+                      f'({_f0_probe:.4f}) is near zero. '
+                      'Signal appears to be a corrected residual. '
+                      'Falling back to z-score. '
+                      'Pass use_zscore=True explicitly '
+                      'to suppress this check.')
+                _use_zscore = True
+        self.sector.params.use_zscore = _use_zscore
 
-            # ---------------------
-            print('\textracting aligned fluorescence traces...')
-            _n_trace = 1
-            for n_x in range(n_sectors):
-                for n_y in range(n_sectors):
-                    print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ')
-                    # calculate location of sector
-                    _ind_x_lower = int((n_x / n_sectors) * rec.shape[1])
-                    _ind_x_upper = int(((n_x+1) / n_sectors)
-                                       * rec.shape[1])
+        self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
+        self.sector.dff_resid = np.empty((n_sectors, n_sectors),
+                                         dtype=dict)
 
-                    _ind_y_lower = int((n_y / n_sectors) * rec.shape[1])
-                    _ind_y_upper = int(((n_y+1) / n_sectors)
-                                       * rec.shape[1])
+        self.sector.t = t_vec
 
-                    self.sector.x.lower[n_x, n_y] = _ind_x_lower
-                    self.sector.x.upper[n_x, n_y] = _ind_x_upper
-                    self.sector.y.lower[n_x, n_y] = _ind_y_lower
-                    self.sector.y.upper[n_x, n_y] = _ind_y_upper
+        # store edges of sectors
+        self.sector.x = SimpleNamespace()
+        self.sector.x.lower = np.zeros((n_sectors, n_sectors), dtype=int)
+        self.sector.x.upper = np.zeros((n_sectors, n_sectors), dtype=int)
+        self.sector.y = SimpleNamespace()
+        self.sector.y.lower = np.zeros((n_sectors, n_sectors), dtype=int)
+        self.sector.y.upper = np.zeros((n_sectors, n_sectors), dtype=int)
 
-                    # setup structure
-                    self.sector.dff[n_x, n_y] = {}
-                    self.sector.dff_resid[n_x, n_y] = {}
+        # ---------------------
+        print('\textracting aligned fluorescence traces...')
+        _n_trace = 1
+        _all_rew_t = self.beh._data.get_event_var('totalRewardTimes')
+        for n_x in range(n_sectors):
+            for n_y in range(n_sectors):
+                print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ',
+                      end='\r')
+                # calculate location of sector
+                _ind_x_lower = int((n_x / n_sectors) * rec.shape[1])
+                _ind_x_upper = int(((n_x+1) / n_sectors)
+                                   * rec.shape[1])
 
-                    for _tr_cond in _tr_conds:
-                        self.sector.dff[n_x, n_y][_tr_cond] = np.zeros((
-                            self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
-                        self.sector.dff_resid[n_x, n_y][_tr_cond] \
-                            = np.zeros_like(
-                                self.sector.dff[n_x, n_y][_tr_cond])
+                _ind_y_lower = int((n_y / n_sectors) * rec.shape[1])
+                _ind_y_upper = int(((n_y+1) / n_sectors)
+                                   * rec.shape[1])
 
-                    # store stim-aligned traces
-                    self.sector.tr_counts = {k: 0 for k in _tr_conds}
-                    for trial in range(self.beh._stimrange.first,
-                                       self.beh._stimrange.last):
-                        print(f'\t\t\t{trial=}', end='\r')
-                        _t_stim = self.beh.stim.t_start[trial]
-                        _t_start = _t_stim - t_pre
-                        _t_end = self.beh._data.get_event_var(
-                            'totalRewardTimes')[trial] + t_post
+                self.sector.x.lower[n_x, n_y] = _ind_x_lower
+                self.sector.x.upper[n_x, n_y] = _ind_x_upper
+                self.sector.y.lower[n_x, n_y] = _ind_y_lower
+                self.sector.y.upper[n_x, n_y] = _ind_y_upper
 
-                        _ind_t_start = np.argmin(np.abs(
-                            rec_t - _t_start))
-                        _ind_t_end = np.argmin(np.abs(
-                            rec_t - _t_end)) + 2   # add frames to end
+                # setup structure
+                self.sector.dff[n_x, n_y] = self._init_dff_by_cond(
+                    _tr_conds, n_frames_tot)
+                self.sector.dff_resid[n_x, n_y] = {
+                    _cond: np.zeros_like(_arr)
+                    for _cond, _arr in self.sector.dff[n_x, n_y].items()}
 
-                        # extract fluorescence
-                        _f = np.mean(np.mean(
-                            rec[_ind_t_start:_ind_t_end,
-                                     _ind_x_lower:_ind_x_upper,
-                                     _ind_y_lower:_ind_y_upper], axis=1),
-                                     axis=1)
-                        if _use_zscore:
-                            _baseline = _f[:n_frames_pre]
-                            _sigma = np.std(_baseline)
-                            _dff = (_f - np.mean(_baseline)) / _sigma \
-                                if _sigma > 0 else np.zeros_like(_f)
+                # store stim-aligned traces
+                self.sector.tr_counts = {k: 0 for k in _tr_conds}
+                for trial in range(self.beh._stimrange.first,
+                                   self.beh._stimrange.last):
+                    print(f'\t\t\t{int(trial)}', end='\r')
+                    _t_stim = self.beh.stim.t_start[trial]
+                    _t_start = _t_stim - t_pre
+                    _t_end = _all_rew_t[trial] + t_post
+
+                    _ind_t_start = np.argmin(np.abs(
+                        rec_t - _t_start))
+                    _ind_t_end = np.argmin(np.abs(
+                        rec_t - _t_end)) + 2   # add frames to end
+
+                    # extract fluorescence
+                    _f = np.mean(np.mean(
+                        rec[_ind_t_start:_ind_t_end,
+                                 _ind_x_lower:_ind_x_upper,
+                                 _ind_y_lower:_ind_y_upper], axis=1),
+                                 axis=1)
+                    if _use_zscore:
+                        _baseline = _f[:n_frames_pre]
+                        _sigma = np.std(_baseline)
+                        _dff = (_f - np.mean(_baseline)) / _sigma \
+                            if _sigma > 0 else np.zeros_like(_f)
+                    else:
+                        _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+
+                    for _tr_cond in self._trial_cond_map.get(int(trial), []):
+                        if _tr_cond in self.sector.dff[n_x, n_y]:
+                            self.sector.dff[n_x, n_y][_tr_cond][
+                                self.sector.tr_counts[_tr_cond], :] = \
+                                    _dff[0:n_frames_tot]
+                            self.sector.tr_counts[_tr_cond] += 1
+
+                # store dff residuals
+                # ----------
+                for _tr_cond in _resid_tr_conds:
+                    for tr in range(
+                            self.sector.dff[n_x, n_y][_tr_cond].shape[0]):
+                        if resid_type == 'sector':
+                            _dff_mean = np.mean(
+                                self.sector.dff[n_x, n_y][_tr_cond], axis=0)
+                        elif resid_type == 'trial':
+                            _dff_mean = self.frame.dff[_tr_cond][tr, :]
                         else:
-                            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+                            raise ValueError(
+                                "resid_type must be 'sector' or 'trial'," /
+                                + f" got '{resid_type}'")
 
-                        # save in self.sector.dff for the correct tr_cond
-                        for _tr_cond in _tr_conds:
-                            if _all_trs_cond[trial] == int(_tr_cond):
-                                self.sector.dff[n_x, n_y][_tr_cond][
-                                    self.sector.tr_counts[_tr_cond], :] \
-                                    = _dff[0:n_frames_tot]
-                                self.sector.tr_counts[_tr_cond] += 1
+                        self.sector.dff_resid[n_x, n_y][_tr_cond][tr, :] \
+                            = self.sector.dff[n_x, n_y][_tr_cond][tr, :] \
+                            - _dff_mean
 
-                    # store dff residuals
-                    # ----------
-                    for _tr_cond in _tr_conds:
-                        for tr in range(
-                                self.sector.dff[n_x, n_y][_tr_cond].shape[0]):
-                            if resid_type == 'sector':
-                                _dff_mean = np.mean(
-                                    self.sector.dff[n_x, n_y][_tr_cond],
-                                    axis=0)
-                            elif resid_type == 'trial':
-                                _dff_mean = self.frame.dff[_tr_cond][tr, :]
+                # update _n_trace
+                _n_trace += 1
+        print('')
 
-                            self.sector.dff_resid[n_x, n_y][_tr_cond][tr, :] \
-                                = self.sector.dff[n_x, n_y][_tr_cond][tr, :] \
-                                - _dff_mean
+        # compute cross-correlations (optional, expensive O(n_sectors^4))
+        if compute_resid_corr:
+            if resid_corr_tr_cond not in _tr_conds:
+                raise ValueError(
+                    f"resid_corr_tr_cond '{resid_corr_tr_cond}'"
+                    + " not found in trial conditions.")
+            self.sector.resid_corr_stat = np.zeros(
+                (self.sector.n_sectors**2, self.sector.n_sectors**2))
+            self.sector.resid_corr_pval = np.zeros(
+                (self.sector.n_sectors**2, self.sector.n_sectors**2))
 
-                    # update _n_trace
-                    _n_trace += 1
+            for sec_1 in range(self.sector.n_sectors**2):
+                for sec_2 in range(self.sector.n_sectors**2):
+                    sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
+                    sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
 
-            print('\n')
-            # compute cross-correlations (optional, expensive O(n_sectors^4))
-            if compute_resid_corr:
-                self.sector.resid_corr_stat = np.zeros(
-                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
-                self.sector.resid_corr_pval = np.zeros(
-                    (self.sector.n_sectors**2, self.sector.n_sectors**2))
+                    _sec_1_sig = np.mean(
+                        self.sector.dff_resid[sec_1_x, sec_1_y][
+                            resid_corr_tr_cond],
+                        axis=1)
+                    _sec_2_sig = np.mean(
+                        self.sector.dff_resid[sec_2_x, sec_2_y][
+                            resid_corr_tr_cond],
+                        axis=1)
 
-                for sec_1 in range(self.sector.n_sectors**2):
-                    for sec_2 in range(self.sector.n_sectors**2):
-                        sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
-                        sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
+                    _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
+                    self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
+                    self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
 
-                        _sec_1_sig = np.mean(
-                            self.sector.dff_resid[sec_1_x, sec_1_y][
-                                resid_corr_tr_cond],
-                            axis=1)
-                        _sec_2_sig = np.mean(
-                            self.sector.dff_resid[sec_2_x, sec_2_y][
-                                resid_corr_tr_cond],
-                            axis=1)
-
-                        _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
-                        self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
-                        self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
-
-            # add null distributions
-            # -------------
-            if compute_null:
-                self.add_null_dists(n_null=n_null, t_pre=t_pre, t_post=t_post)
+        # add null distributions
+        # -------------
+        if compute_null:
+            self.add_null_dists(n_null=n_null, t_pre=t_pre, t_post=t_post)
 
         return
 
@@ -1026,9 +958,8 @@ class TwoPRec(object):
         neurs = np.where(self.neur.iscell[:, 0] == 1)[0]
         n_neurs = neurs.shape[0]
 
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int((2 + t_post) * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
+        n_frames_pre, n_frames_post, n_frames_tot, t_vec = \
+            self._aligned_frame_params(t_pre, t_post, t_event=2)
 
         _tr_conds = list(self.beh.tr_inds.keys())
 
@@ -1040,8 +971,7 @@ class TwoPRec(object):
         self.neur.x = np.zeros(n_neurs)
         self.neur.y = np.zeros(n_neurs)
 
-        self.neur.t_aln = np.linspace(
-            -1*t_pre, 2+t_post, n_frames_tot)
+        self.neur.t_aln = t_vec
 
         # iterate through neurons
         # ----------------
@@ -1056,10 +986,8 @@ class TwoPRec(object):
 
             # setup structure
             # -------------
-            self.neur.dff_aln[ind] = {}
-            for _tr_cond in _tr_conds:
-                self.neur.dff_aln[ind][_tr_cond] = np.zeros((
-                    self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
+            self.neur.dff_aln[ind] = self._init_dff_by_cond(
+                _tr_conds, n_frames_tot)
 
             _tr_counts = {k: 0 for k in _tr_conds}
 
@@ -1090,9 +1018,730 @@ class TwoPRec(object):
             for _tr_cond in _tr_conds:
                 self.neur.dff_aln_mean[_tr_cond][ind, :] = \
                     np.mean(self.neur.dff_aln[ind][_tr_cond], axis=0)
-
         print('')
+
         return
+
+    def plt_frame(self,
+                  figsize=(3.43, 2),
+                  t_pre=2, t_post=5,
+                  colors=sns.cubehelix_palette(
+                      n_colors=3,
+                      start=2, rot=0,
+                      dark=0.1, light=0.6),
+                  plot_type=None,
+                  plt_show=True,
+                  channel=None,
+                  use_zscore=False):
+
+        """
+        Plots the average fluorescence across the whole fov,
+        separated by trial-type (eg 0%, 50%, 100% rewarded trials).
+
+        Delegates data extraction to self.add_frame().
+
+        Parameters
+        ----------
+        plot_type : str or None
+            None: plots 0, 0.5, 1
+            'rew_norew': plots 0.5_rew, 0.5_norew
+            'prelick_noprelick': plots 0.5_prelick, 0.5_noprelick
+        channel : str or None
+            Passed to add_frame() / _get_rec(). Ignored in the base class.
+        use_zscore : bool
+            Passed to add_frame(). If True, use z-score instead of df/f.
+        """
+        self.add_frame(t_pre=t_pre, t_post=t_post,
+                       channel=channel, use_zscore=use_zscore)
+
+        # build color and linestyle maps
+        if hasattr(self.beh, 'tr_conds_outcome'):
+            _cmap = sns.cubehelix_palette(
+                as_cmap=True, start=2, rot=0, dark=0.1, light=0.6)
+            _outcomes = np.asarray(self.beh.tr_conds_outcome, dtype=float)
+            _order = np.argsort(_outcomes, kind='mergesort')
+            _tile = np.linspace(0.0, 1.0, len(_order)) \
+                if len(_order) > 1 else np.array([0.5])
+            colors = {}
+            for _rank, _idx in enumerate(_order):
+                _tr_cond = str(self.beh._stimparser.parsed_param[_idx])
+                colors[_tr_cond] = _cmap(_tile[_rank])
+        else:
+            _palette = sns.cubehelix_palette(
+                n_colors=len(self.beh.tr_inds), start=2, rot=0,
+                dark=0.1, light=0.6)
+            colors = {k: _palette[i] for i, k in enumerate(self.beh.tr_inds)}
+        linestyles = {k: 'solid' for k in self.beh.tr_inds}
+        if '0.5_norew' in linestyles:
+            linestyles['0.5_norew'] = 'dashed'
+        if '0.5_noprelick' in linestyles:
+            linestyles['0.5_noprelick'] = 'dashed'
+
+        fig_avg = plt.figure(figsize=figsize)
+        spec = gs.GridSpec(nrows=1, ncols=1,
+                           figure=fig_avg)
+        ax_trace = fig_avg.add_subplot(spec[0, 0])
+
+        # determine which conditions to plot
+        if plot_type is None:
+            tr_conds = list(self.beh.tr_conds)
+        elif plot_type == 'rew_norew':
+            tr_conds = ['0.5_rew', '0.5_norew']
+        elif plot_type == 'prelick_noprelick':
+            tr_conds = ['0.5_prelick', '0.5_noprelick']
+
+        # plot stim-aligned traces
+        for ind, tr_cond in enumerate(tr_conds):
+            tr_cond_outcome = self.beh.tr_conds_outcome[ind]
+            _color = colors.get(tr_cond, 'grey')
+            _ls = linestyles.get(tr_cond, 'solid')
+            ax_trace.plot(self.frame.t,
+                          np.mean(self.frame.dff[tr_cond], axis=0),
+                          color=_color,
+                          linestyle=_ls,
+                          label=f'{tr_cond} ({tr_cond_outcome}uL)')
+            ax_trace.fill_between(
+                self.frame.t,
+                np.mean(self.frame.dff[tr_cond], axis=0) -
+                np.std(self.frame.dff[tr_cond], axis=0),
+                np.mean(self.frame.dff[tr_cond], axis=0) +
+                np.std(self.frame.dff[tr_cond], axis=0),
+                facecolor=_color,
+                alpha=0.2)
+
+        # plot rew and stim onset markers
+        ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
+                         linewidth=1.5, alpha=0.8)
+        ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
+                         linewidth=1.5, alpha=0.8)
+
+        ax_trace.legend()
+
+        ax_trace.set_xlabel('time (s)')
+        ax_trace.set_ylabel('z-score (frame)' if use_zscore
+                            else 'df/f (frame)')
+
+        _ch_suffix = f'ch={channel}' if channel is not None else \
+            (f'ch={self.ch_img}' if hasattr(self, 'ch_img') else '')
+        corr_suffix = ''
+        if channel == 'grn' and hasattr(self, 'rec_t_grn') \
+           and hasattr(self, 'corr_sig_method'):
+            corr_suffix = f'_corr={self.corr_sig_method}'
+        zscore_suffix = '_zscore' if use_zscore else ''
+        fig_avg.savefig(os.path.join(
+            os.getcwd(), 'figs_mbl',
+            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+            + f'{plot_type=}_{t_pre=}_{t_post=}_'
+            + f'{_ch_suffix}{corr_suffix}'
+            + f'{zscore_suffix}_mean_trial_activity.pdf'))
+
+        if plt_show:
+            plt.show()
+        else:
+            plt.close(fig_avg)
+
+    def plt_sectors(self,
+                    n_sectors=10,
+                    t_pre=2, t_post=5,
+                    plot_type=None,
+                    resid_type='sector',
+                    resid_tr_cond='1',
+                    resid_alpha=0.5,
+                    resid_smooth=True,
+                    resid_smooth_windlen=5,
+                    resid_smooth_polyorder=3,
+                    resid_trial_nbins=30,
+                    figsize=(6, 6),
+                    img_ds_factor=50,
+                    img_alpha=0.5,
+                    plt_dff={'x': {'gain': 0.6,
+                                   'offset': 0.2},
+                             'y': {'gain': 10,
+                                   'offset': 0.2}},
+                    plt_prefix='',
+                    plt_show=True,
+                    channel=None,
+                    use_zscore=False,
+                    outlier_thresh=None,
+                    auto_gain_dff=False,
+                    minimal_output=False,
+                    colors=sns.cubehelix_palette(
+                        n_colors=3,
+                        start=2, rot=0,
+                        dark=0.2, light=0.8)):
+        """
+        Divides the field of view into sectors, and plots a set of trial-types
+        separately within each sector.
+
+        plot_type controls the type of plot:
+            if plot_type is None:
+                stim_list = ['0', '0.5', '1']
+            elif plot_type == 'rew_norew':
+                stim_list = ['0.5_rew', '0.5_norew']
+            elif plot_type == 'prelick_noprelick':
+                stim_list = ['0.5_prelick', '0.5_noprelick']
+            elif plot_type == 'rew':
+                stim_list = ['0', '0.5_rew', '1']
+        """
+        rec = self._get_rec(channel)
+        rec_t = self._get_rec_t(channel)
+        n_frames_pre, _, n_frames_tot, _ = self._aligned_frame_params(
+            t_pre, t_post)
+
+        # ---- resolve _use_zscore ----
+        _use_zscore = use_zscore
+        if not _use_zscore and \
+           self.beh._stimrange.first < self.beh._stimrange.last:
+            _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
+            _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
+            _probe = np.mean(rec[_ind0:_ind0 + n_frames_pre], axis=(1, 2))
+            _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
+            if np.abs(_f0_probe) < 1.0:
+                print(f'\tWarning: baseline fluorescence mean '
+                      f'({_f0_probe:.4f}) is near zero. '
+                      'Signal appears to be a corrected residual. '
+                      'Falling back to z-score. '
+                      'Pass use_zscore=True explicitly '
+                      'to suppress this check.')
+                _use_zscore = True
+
+        if _use_zscore and not auto_gain_dff:
+            auto_gain_dff = True
+
+        if outlier_thresh is None:
+            outlier_thresh = 20 if _use_zscore else 1
+
+        # ---- stim_list from plot_type ----
+        _stim_list_map = {
+            None: ['0', '0.5', '1'],
+            'rew_norew': ['0.5_rew', '0.5_norew'],
+            'prelick_noprelick': ['0.5_prelick', '0.5_noprelick'],
+            'rew': ['0', '0.5_rew', '1'],
+        }
+        stim_list = _stim_list_map.get(plot_type, list(self.beh.tr_conds))
+
+        # ---- ensure sector data ----
+        _sector_cache_valid = (
+            hasattr(self, 'sector')
+            and hasattr(self.sector, 'dff')
+            and hasattr(self.sector, 'params')
+            and self.sector.n_sectors == n_sectors
+            and self.sector.params.t_rew_pre == t_pre
+            and self.sector.params.t_rew_post == t_post
+            and self.sector.params.channel == channel
+            and self.sector.params.use_zscore == _use_zscore
+            and isinstance(self.sector.dff[0, 0], dict)
+        )
+
+        if not _sector_cache_valid:
+            print('creating trial-averaged signal (sectors)...')
+            self.add_sectors(
+                n_sectors=n_sectors, t_pre=t_pre, t_post=t_post,
+                resid_type=resid_type,
+                resid_corr_tr_cond=resid_tr_cond,
+                channel=channel, use_zscore=_use_zscore,
+                compute_resid_corr=False, compute_null=False)
+        elif self.sector.params.resid_type != resid_type:
+            print('\trecomputing residuals (resid_type changed)...')
+            for n_x in range(n_sectors):
+                for n_y in range(n_sectors):
+                    for _tr_cond in self.sector.params.resid_tr_conds:
+                        _dff_arr = self.sector.dff[n_x, n_y][_tr_cond]
+                        if resid_type == 'sector':
+                            self.sector.dff_resid[n_x, n_y][_tr_cond] = (
+                                _dff_arr - np.mean(_dff_arr, axis=0))
+                        elif resid_type == 'trial':
+                            self.sector.dff_resid[n_x, n_y][_tr_cond] = (
+                                _dff_arr - self.frame.dff[_tr_cond])
+            self.sector.params.resid_type = resid_type
+
+        # ---- colors/linestyle (always refreshed for current plot_type) ----
+        self.sector.colors = {'0': colors[0], '0.5': colors[1], '1': colors[2],
+                              '0.5_rew': colors[1], '0.5_norew': colors[1],
+                              '0.5_prelick': colors[1],
+                              '0.5_noprelick': colors[1]}
+        self.sector.linestyle = {'0': 'solid', '0.5': 'solid', '1': 'solid',
+                                 '0.5_rew': 'solid', '0.5_norew': 'dashed',
+                                 '0.5_prelick': 'solid',
+                                 '0.5_noprelick': 'dashed'}
+
+        # ---- figure creation ----
+        fig_avg = plt.figure(figsize=figsize)
+        spec_avg = gs.GridSpec(nrows=1, ncols=1, figure=fig_avg)
+        ax_img = fig_avg.add_subplot(spec_avg[0, 0])
+
+        fig_resid, ax_img_resid = None, None
+        if not minimal_output:
+            fig_resid = plt.figure(figsize=figsize)
+            spec_resid = gs.GridSpec(nrows=1, ncols=1, figure=fig_resid)
+            ax_img_resid = fig_resid.add_subplot(spec_resid[0, 0])
+            ax_img_resid.set_title(
+                f'residuals vs mean({resid_type}), p(rew)={resid_tr_cond}')
+
+        print('\tcreating max projection image...')
+        _rec_max = np.max(rec[::img_ds_factor, :, :], axis=0)
+        _step = int(_rec_max.shape[0] / n_sectors)
+        _rec_max[:, ::_step] = 0
+        _rec_max[::_step, :] = 0
+        _extent = [0, n_sectors, n_sectors, 0]
+        ax_img.imshow(_rec_max, extent=_extent, alpha=img_alpha)
+        if not minimal_output:
+            ax_img_resid.imshow(_rec_max, extent=_extent, alpha=img_alpha)
+
+        # ---- auto-gain: set y-gain from global max across all sectors ----
+        if auto_gain_dff:
+            _max_pos = max(
+                (float(np.max(np.median(self.sector.dff[gx, gy][sc], axis=0)))
+                 for gx in range(n_sectors)
+                 for gy in range(n_sectors)
+                 for sc in stim_list
+                 if sc in self.sector.dff[gx, gy]),
+                default=0.0)
+            if _max_pos > 0:
+                plt_dff = {**plt_dff,
+                           'y': {**plt_dff['y'],
+                                 'gain': (1.0 - plt_dff['y']['offset'])
+                                         / _max_pos}}
+
+        # ---- plot all sectors ----
+        for n_x in range(n_sectors):
+            for n_y in range(n_sectors):
+                _t_sector = ((self.sector.t / self.sector.t[-1])
+                             * plt_dff['x']['gain']
+                             + n_x + plt_dff['x']['offset'])
+                _dff_zero = n_y - plt_dff['y']['offset'] + 1
+                _vkw = dict(linewidth=1, linestyle='dashed')
+
+                for stim_cond in stim_list:
+                    _dff_mean = np.median(
+                        self.sector.dff[n_x, n_y][stim_cond], axis=0)
+                    if np.max(np.abs(_dff_mean)) < outlier_thresh:
+                        _shifted = (-_dff_mean * plt_dff['y']['gain']
+                                    + _dff_zero)
+                        ax_img.plot(_t_sector, _shifted,
+                                    color=self.sector.colors[stim_cond],
+                                    linestyle=self.sector.linestyle[stim_cond])
+
+                if not minimal_output:
+                    _resid_arr = self.sector.dff_resid[n_x, n_y][resid_tr_cond]
+                    _n_tr_resid = _resid_arr.shape[0]
+                    _rocket = sns.color_palette('rocket', _n_tr_resid)
+                    for trial in range(_n_tr_resid):
+                        _dff = _resid_arr[trial, :]
+                        if resid_smooth:
+                            _dff = sp.signal.savgol_filter(
+                                _dff, resid_smooth_windlen,
+                                resid_smooth_polyorder)
+                        if np.max(np.abs(_dff)) < outlier_thresh:
+                            _shifted = (-_dff * plt_dff['y']['gain']
+                                        + _dff_zero)
+                            ax_img_resid.plot(
+                                _t_sector, _shifted,
+                                color=_rocket[trial], alpha=resid_alpha,
+                                linestyle=self.sector.linestyle[resid_tr_cond])
+
+                _t_stim = n_x + plt_dff['x']['offset']
+                _t_rew = ((2 / self.sector.t[-1]) * plt_dff['x']['gain']
+                          + n_x + plt_dff['x']['offset'])
+                ax_img.plot([_t_stim, _t_stim], [n_y + 0.2, n_y + 0.8],
+                            color=sns.xkcd_rgb['dark grey'], **_vkw)
+                ax_img.plot([_t_rew, _t_rew], [n_y + 0.2, n_y + 0.8],
+                            color=sns.xkcd_rgb['bright blue'], **_vkw)
+                if not minimal_output:
+                    ax_img_resid.plot([_t_stim, _t_stim],
+                                      [n_y + 0.2, n_y + 0.8],
+                                      color=sns.xkcd_rgb['dark grey'], **_vkw)
+                    ax_img_resid.plot([_t_rew, _t_rew],
+                                      [n_y + 0.2, n_y + 0.8],
+                                      color=sns.xkcd_rgb['bright blue'], **_vkw)
+                    ax_img_resid.plot([_t_stim, _t_rew],
+                                      [_dff_zero, _dff_zero],
+                                      color='k', **_vkw)
+
+        # ---- build filename base strings ----
+        corr_suffix = (f'_corr={self.corr_sig_method}'
+                       if channel == 'grn' and hasattr(self, 'rec_t_grn')
+                       and hasattr(self, 'corr_sig_method') else '')
+        zscore_suffix = f'_zscore={_use_zscore}'
+        _figs_dir = os.path.join(os.getcwd(), 'figs_mbl')
+        _id = (f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}'
+               f'_{plt_prefix}_{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}'
+               f'_ch={channel}{corr_suffix}{zscore_suffix}')
+        _id_resid = f'{_id}_{resid_tr_cond=}_{resid_type=}'
+
+        fig_avg.savefig(os.path.join(_figs_dir, f'sectors_{_id}.pdf'))
+
+        # ---- supplemental plots (skip in minimal mode) ----
+        if not minimal_output:
+            n_trs = self.sector.dff_resid[0, 0][resid_tr_cond].shape[0]
+            n_rows = int(np.ceil(np.sqrt(n_trs)))
+
+            # normalized sector signals
+            fig_norm_sec_sig = plt.figure(figsize=(3.43, 1.5))
+            spec_norm_sec_sig = gs.GridSpec(nrows=1, ncols=3,
+                                            figure=fig_norm_sec_sig)
+            axes_norm = [fig_norm_sec_sig.add_subplot(spec_norm_sec_sig[0, i])
+                         for i in range(3)]
+            for tr_type, ax_n in zip(['0', '0.5', '1'], axes_norm):
+                for sec in range(self.sector.n_sectors):
+                    sec_x, sec_y = np.divmod(sec, self.sector.n_sectors)
+                    _dff = self.sector.dff[sec_x, sec_y][tr_type]
+                    _sec_max = np.max(_dff, axis=1, keepdims=True)
+                    _sec_max[_sec_max == 0] = 1  # avoid divide-by-zero
+                    ax_n.plot(self.sector.t,
+                              np.mean(_dff / _sec_max, axis=0),
+                              color=self.sector.colors[tr_type], alpha=0.8)
+
+            # residual cross-correlations (vectorized: O(n²) not O(n⁴))
+            _n_sec2 = self.sector.n_sectors ** 2
+            _sigs = np.stack([
+                np.mean(self.sector.dff_resid[
+                    s // n_sectors, s % n_sectors][resid_tr_cond], axis=1)
+                for s in range(_n_sec2)])
+            self.sector.resid_corr_stat = np.corrcoef(_sigs)
+            self.sector.resid_corr_pval = np.full_like(
+                self.sector.resid_corr_stat, np.nan)
+
+            fig_resid_corr = plt.figure(figsize=figsize)
+            spec_resid_corr = gs.GridSpec(nrows=1, ncols=1,
+                                          figure=fig_resid_corr)
+            ax_resid_corr = fig_resid_corr.add_subplot(spec_resid_corr[0, 0])
+            ax_resid_corr.imshow(self.sector.resid_corr_stat)
+
+            fig_resid_corr_spatial = plt.figure(figsize=figsize)
+            spec_rcs = gs.GridSpec(n_sectors, n_sectors,
+                                   figure=fig_resid_corr_spatial)
+            for s in range(_n_sec2):
+                sx, sy = divmod(s, n_sectors)
+                ax_s = fig_resid_corr_spatial.add_subplot(spec_rcs[sx, sy])
+                ax_s.imshow(
+                    self.sector.resid_corr_stat[s].reshape(
+                        n_sectors, n_sectors),
+                    vmax=1, vmin=-1, cmap='coolwarm')
+                ax_s.set_xticks([])
+                ax_s.set_yticks([])
+            fig_resid_corr_spatial.suptitle(
+                f'residual corrs (spatial), {resid_tr_cond=},'
+                f' residuals vs mean({resid_type})')
+
+            # per-trial residual distributions
+            fig_resid_tr_sep = plt.figure(figsize=figsize)
+            spec_tr = gs.GridSpec(n_rows, n_rows, figure=fig_resid_tr_sep)
+            ax0 = None
+            for tr in range(n_trs):
+                _sector_dff_resid = [
+                    float(np.mean(self.sector.dff_resid[
+                        s // n_sectors, s % n_sectors][resid_tr_cond][tr, :]))
+                    for s in range(_n_sec2)]
+                _tr_x, _tr_y = divmod(tr, n_rows)
+                _ax_kw = dict(sharex=ax0, sharey=ax0) if ax0 is not None else {}
+                ax_tr = fig_resid_tr_sep.add_subplot(
+                    spec_tr[_tr_x, _tr_y], **_ax_kw)
+                if ax0 is None:
+                    ax0 = ax_tr
+                ax_tr.hist(_sector_dff_resid, bins=resid_trial_nbins,
+                           histtype='step', density=True,
+                           color=sns.xkcd_rgb['dark grey'])
+                ax_tr.axvline(0, color='k', linewidth=1, linestyle='dashed')
+                ax_tr.set_xlabel('dff resid.')
+                ax_tr.set_ylabel('pdf')
+                ax_tr.set_title(f'trial={tr}')
+            fig_resid_tr_sep.suptitle(
+                f'residuals vs mean({resid_type}) corrs (spatial),'
+                f' {resid_tr_cond=}, residuals vs mean({resid_type})')
+
+            fig_norm_sec_sig.savefig(
+                os.path.join(_figs_dir, f'sectors_normed_{_id}.pdf'))
+            fig_resid.savefig(
+                os.path.join(_figs_dir, f'sectors_resid_{_id_resid}.pdf'))
+            fig_resid_corr.savefig(
+                os.path.join(_figs_dir,
+                             f'sectors_resid_corr_{_id_resid}.pdf'))
+            fig_resid_corr_spatial.savefig(
+                os.path.join(_figs_dir,
+                             f'sectors_resid_corr_spatial_{_id_resid}.pdf'))
+            fig_resid_tr_sep.savefig(
+                os.path.join(_figs_dir,
+                             f'sectors_resid_trial_sep_{_id_resid}.pdf'))
+
+        # ---- show/close ----
+        if plt_show:
+            plt.show()
+        else:
+            plt.close(fig_avg)
+            if not minimal_output:
+                for _fig in [fig_norm_sec_sig, fig_resid, fig_resid_corr,
+                             fig_resid_corr_spatial, fig_resid_tr_sep]:
+                    if _fig is not None:
+                        plt.close(_fig)
+
+        return
+
+    def plt_neurs(self, t_pre=1, t_post=2,
+                  figsize=(3.43, 3.43), zscore=False,
+                  plt_equal=True,
+                  sort_by='trial_type',
+                  sort_tr_type='max',
+                  cmap=sns.diverging_palette(
+                      220, 20, as_cmap=True),
+                  title_fontsize=8):
+        """
+        Plots trial-averaged neural activity (dff) for each cell as a heatmap,
+        one column per trial condition.
+
+        Parameters
+        ----------
+        sort_tr_type : str
+            Trial condition key used to sort neurons when sort_by='trial_type'.
+            Can be any key present in self.beh.tr_conds, or one of two
+            special strings:
+                'max' : automatically uses the tr_cond with the highest outcome
+                        value in self.beh.tr_conds_outcome.
+                'min' : automatically uses the tr_cond with the lowest outcome
+                        value in self.beh.tr_conds_outcome.
+        """
+        # plot neuron masks
+        self.plt_neur_masks(show=False)
+
+        self.add_lickrates(t_prestim=t_pre,
+                           t_poststim=t_post)
+
+        # setup structure
+        # ---------------
+        neurs = np.where(self.neur.iscell[:, 0] == 1)[0]
+        n_neurs = neurs.shape[0]
+
+        n_frames_pre = int(t_pre * self.samp_rate)
+        n_frames_post = int((2 + t_post) * self.samp_rate)
+        n_frames_tot = n_frames_pre + n_frames_post
+
+        # resolve 'max'/'min' sort_tr_type to the corresponding tr_cond
+        if sort_tr_type in ('max', 'min'):
+            _outcomes = self.beh.tr_conds_outcome
+            _pick = np.argmax(_outcomes) if sort_tr_type == 'max' \
+                else np.argmin(_outcomes)
+            sort_tr_type = self.beh.tr_conds[_pick]
+
+        _tr_conds_all = list(self.beh.tr_inds.keys())
+        _tr_conds_plot = list(self.beh.tr_conds)
+
+        self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
+        self.neur.dff_aln_mean = {}
+        for _tr_cond in _tr_conds_all:
+            self.neur.dff_aln_mean[_tr_cond] = np.zeros(
+                (n_neurs, n_frames_tot))
+        self.neur.x = np.zeros(n_neurs)
+        self.neur.y = np.zeros(n_neurs)
+
+        self.neur.t_aln = np.linspace(
+            -1*t_pre, 2+t_post, n_frames_tot)
+
+        # iterate through neurons
+        # ----------------
+        for ind, neur in enumerate(neurs):
+            # extract x/y locations
+            self.neur.x[ind] = self.neur.stat[neur]['med'][0]
+            self.neur.y[ind] = self.neur.stat[neur]['med'][1]
+            # correct for image crop
+            self.neur.x[ind] -= self.ops.n_px_remove_sides
+            self.neur.y[ind] -= self.ops.n_px_remove_sides
+
+            # setup per-neuron dff_aln structure
+            # -------------
+            self.neur.dff_aln[ind] = {}
+            for _tr_cond in _tr_conds_all:
+                self.neur.dff_aln[ind][_tr_cond] = np.zeros((
+                    self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
+
+            _tr_counts = {k: 0 for k in _tr_conds_all}
+
+            # precompute zscore for this neuron
+            # (avoids repeated full-array zscore)
+            if zscore is True:
+                _f_full = sp.stats.zscore(self.neur.f[neur, :])
+            else:
+                _f_full = self.neur.f[neur, :]
+
+            # extract fluorescence for each trial
+            # -------------
+            for trial in range(self.beh._stimrange.first,
+                               self.beh._stimrange.last):
+                print(f'\t\t\tneur={int(neur)} | {trial=}', end='\r')
+                _t_stim = self.beh.stim.t_start[trial]
+                _t_start = _t_stim - t_pre
+
+                _ind_t_start = np.argmin(np.abs(
+                    self.neur.t - _t_start))
+
+                _f = _f_full[_ind_t_start:_ind_t_start + n_frames_tot]
+                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
+
+                for _cond in self._trial_cond_map.get(int(trial), []):
+                    if _cond in self.neur.dff_aln[ind]:
+                        self.neur.dff_aln[ind][_cond][
+                            _tr_counts[_cond], :] = _dff[0:n_frames_tot]
+                        _tr_counts[_cond] += 1
+
+            for _tr_cond in _tr_conds_all:
+                self.neur.dff_aln_mean[_tr_cond][ind, :] = \
+                    np.mean(self.neur.dff_aln[ind][_tr_cond], axis=0)
+
+        # process data for plotting
+        # ------------
+        _ind_stim_start = np.argmin(np.abs(self.neur.t_aln))
+        _ind_stim_end = np.argmin(np.abs(self.neur.t_aln - 2))
+        _ind_rew_end = np.argmin(np.abs(self.neur.t_aln - (2 + t_post)))
+
+        if sort_by == 'trial_type':
+            # sort by peak activation for the chosen trial type (stim window)
+            _sort_metric = np.max(
+                self.neur.dff_aln_mean[sort_tr_type][
+                    :, _ind_stim_start:_ind_stim_end],
+                axis=1)
+            sort_inds_corr = np.argsort(_sort_metric)
+
+        elif sort_by == 'selectivity':
+            # sort by absolute difference between highest and lowest outcome
+            _cond_max = _tr_conds_plot[-1]
+            _cond_min = _tr_conds_plot[0]
+            _sort_metric = np.abs(np.max(
+                self.neur.dff_aln_mean[_cond_max][
+                    :, _ind_stim_start:_ind_stim_end]
+                - self.neur.dff_aln_mean[_cond_min][
+                    :, _ind_stim_start:_ind_stim_end],
+                axis=1))
+            sort_inds_corr = np.argsort(_sort_metric)
+
+        elif sort_by == 'reward':
+            # sort by peak response in the post-reward window
+            # on highest-outcome trials
+            _cond_max = _tr_conds_plot[-1]
+            _sort_metric = np.max(
+                self.neur.dff_aln_mean[
+                    _cond_max][:, _ind_stim_end:_ind_rew_end],
+                axis=1)
+            sort_inds_corr = np.argsort(_sort_metric)
+
+        else:
+            raise ValueError(
+                "sort_by must be 'trial_type',"
+                + f"'selectivity', or 'reward'; got {sort_by!r}"
+            )
+
+        plt_vmin = np.min(
+            [self.neur.dff_aln_mean[k] for k in _tr_conds_plot])
+        plt_vmax = np.max(
+            [self.neur.dff_aln_mean[k] for k in _tr_conds_plot])
+
+        if plt_equal is True:
+            if abs(plt_vmin) < abs(plt_vmax):
+                plt_vmin = -1 * plt_vmax
+            elif abs(plt_vmin) > abs(plt_vmax):
+                plt_vmax = -1 * plt_vmin
+
+        # plot figure - one column per primary tr_cond
+        # -----------------
+        n_conds = len(_tr_conds_plot)
+        fig = plt.figure(figsize=figsize)
+        spec = gs.GridSpec(nrows=1, ncols=n_conds, figure=fig)
+        axes = [fig.add_subplot(spec[0, 0])]
+        for _i in range(1, n_conds):
+            axes.append(fig.add_subplot(spec[0, _i], sharey=axes[0]))
+
+        _ind_zero = np.argmin(np.abs(self.neur.t_aln))
+        _ind_rew = np.argmin(np.abs(self.neur.t_aln - 2))
+
+        _outcomes_plot = (list(self.beh.tr_conds_outcome)
+                          if hasattr(self.beh, 'tr_conds_outcome') else
+                          [None] * len(_tr_conds_plot))
+        for _ax, _tr_cond, _tr_cond_outcome in zip(
+                axes, _tr_conds_plot, _outcomes_plot):
+            _ax.pcolormesh(
+                self.neur.dff_aln_mean[_tr_cond][sort_inds_corr],
+                vmin=plt_vmin, vmax=plt_vmax,
+                cmap=cmap)
+            _ax.axvline(_ind_zero,
+                        color=sns.xkcd_rgb['dark grey'],
+                        linewidth=1,
+                        linestyle='dashed')
+            _ax.axvline(_ind_rew,
+                        color=sns.xkcd_rgb['bright blue'],
+                        linewidth=1,
+                        linestyle='dashed')
+            _ax.set_xticks(
+                ticks=[0, _ind_zero, self.neur.t_aln.shape[-1]],
+                labels=[f'{self.neur.t_aln[0]:.2f}', 0,
+                        f'{self.neur.t_aln[-1]:.2f}'])
+            _title = f'{self.beh._stimparser.parse_by}={_tr_cond}'
+            if _tr_cond_outcome is not None:
+                _title += f'\nOutcome: {_tr_cond_outcome}uL'
+            _ax.set_title(_title, fontsize=title_fontsize)
+        axes[0].set_ylabel('neuron')
+        axes[n_conds // 2].set_xlabel('time from stim (s)')
+
+        fig.savefig(os.path.join(
+            os.getcwd(), 'figs_mbl',
+            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+            + f'{t_pre=}_{t_post=}_{zscore=}_{plt_equal=}_'
+            + 'neur_trial_activity.pdf'))
+
+        # second figure: population-averaged trace per trial condition
+        # -------------------------------------------------------------
+        if hasattr(self.beh, 'tr_conds_outcome'):
+            _cmap = sns.cubehelix_palette(
+                as_cmap=True, start=2, rot=0, dark=0.1, light=0.6).reversed()
+            _outcomes = np.asarray(self.beh.tr_conds_outcome, dtype=float)
+            _order = np.argsort(_outcomes, kind='mergesort')
+            _tile = np.linspace(0.0, 1.0, len(_order)) \
+                if len(_order) > 1 else np.array([0.5])
+            _tr_colors = {}
+            for _rank, _idx in enumerate(_order):
+                _tr_cond = str(self.beh._stimparser.parsed_param[_idx])
+                _tr_colors[_tr_cond] = _cmap(_tile[_rank])
+
+            fig_pop, ax_pop = plt.subplots(1, 1, figsize=(3.43, 2))
+
+            for _tr_cond, _tr_cond_outcome in zip(
+                    _tr_conds_plot, self.beh.tr_conds_outcome):
+                _color = _tr_colors[_tr_cond]
+                _mean_pop = np.mean(
+                    self.neur.dff_aln_mean[_tr_cond], axis=0)
+                _sem_pop = (np.std(
+                    self.neur.dff_aln_mean[_tr_cond], axis=0)
+                    / np.sqrt(n_neurs))
+                ax_pop.plot(
+                    self.neur.t_aln, _mean_pop,
+                    color=_color,
+                    label=f'{_tr_cond} ({_tr_cond_outcome}uL)')
+                ax_pop.fill_between(
+                    self.neur.t_aln,
+                    _mean_pop - _sem_pop,
+                    _mean_pop + _sem_pop,
+                    facecolor=_color,
+                    alpha=0.2)
+
+            ax_pop.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
+                           linewidth=1.5, alpha=0.8)
+            ax_pop.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
+                           linewidth=1.5, alpha=0.8)
+            ax_pop.legend(title=f'{self.beh._stimparser.parse_by} (outcome)')
+            ax_pop.set_xlabel('time from stim (s)')
+            ax_pop.set_ylabel('mean df/f (neurs)')
+
+            fig_pop.savefig(os.path.join(
+                os.getcwd(), 'figs_mbl',
+                f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
+                + f'{t_pre=}_{t_post=}_{zscore=}_'
+                + 'neur_popmean_activity.pdf'))
+
+        plt.show()
+
+        return
+
+    # ------------------------------------
+    # advanced class methods for analyzing/plotting psychometric
+    # attributes, controls, etc (unoptimized as of 26.2)
+    # -------------------------------------
 
     def add_psychometrics(self, t_pre=5, t_post=2):
         if not hasattr(self, 'sector'):
@@ -1359,6 +2008,228 @@ class TwoPRec(object):
         self.psychometrics.lick.optimism = _optimism
 
         return
+
+    def add_null_dists(self, n_null=100, auto_run_methods=True,
+                       t_pre=2, t_post=5, channel=None):
+        """
+        Makes a 'null' distribution based on the alternate hypothesis
+        of no spatial variability in task-related serotonin
+        signaling, but instead spatial variability in 1) GRAB sensor
+        expression; and 2) imaging-related noise.
+
+        Reconstructs a null version of each sector's response as a
+        modified version of the whole-frame response, scaled up/down
+
+        - Must have run plt_stim_aligned_sectors first
+        """
+        print('creating null distributions'
+              + (f' ({channel})' if channel else ''))
+
+        # check that sector and frame exist
+        print('\trunning checks')
+
+        if not hasattr(self, 'frame'):
+            if auto_run_methods is False:
+                print('Must have run self.add_frame() first!')
+                return
+            elif auto_run_methods is True:
+                self.add_frame(t_pre=t_pre,
+                               t_post=t_post,
+                               channel=channel)
+
+        if not hasattr(self, 'sector'):
+            if auto_run_methods is False:
+                print('Must have run self.add_sectors() first!')
+                return
+            elif auto_run_methods is True:
+                self.add_sectors(t_pre=t_pre,
+                                 t_post=t_post,
+                                 channel=channel)
+
+        # construct the null distribution
+        # Memory-optimized: store only parameters and ONE example trace per
+        # sector (for plotting). Full null distributions are generated
+        # on-the-fly when needed (e.g., in add_psychometrics).
+        self.sector_null = SimpleNamespace()
+        self.sector_null.t = self.sector.t
+        self.sector_null.n_null = n_null
+
+        # Store ONE example null trace per sector/condition (for plt_null_dist)
+        self.sector_null.dff = np.empty(
+            (self.sector.n_sectors, self.sector.n_sectors), dtype=dict)
+
+        # Store parameters for on-the-fly generation
+        self.sector_null.params = np.empty(
+            (self.sector.n_sectors, self.sector.n_sectors), dtype=dict)
+
+        _ind_bl_start = 0
+        _ind_bl_end = np.argmin(np.abs(self.sector.t - 0))
+        ampli_frame = np.max(np.mean(self.frame.dff['1'], axis=0))
+        self.sector_null.ampli_frame = ampli_frame
+
+        print('\tcomputing null parameters for each sector')
+        _n_trace = 0
+        for n_x in range(self.sector.n_sectors):
+            for n_y in range(self.sector.n_sectors):
+                if (_n_trace + 1) % 10 == 0:
+                    print(f'\t\tsector {_n_trace+1}/'
+                          f'{self.sector.n_sectors**2}...',
+                          end='\r')
+
+                # Compute scaling variables (stored for on-the-fly generation)
+                _ampli_sector = np.max(np.mean(
+                    self.sector.dff[n_x, n_y]['1'], axis=0))
+                _ampli_scaling = _ampli_sector / ampli_frame
+
+                # Vectorized baseline std computation
+                _bl_data = self.sector.dff[n_x, n_y]['1'][
+                    :, _ind_bl_start:_ind_bl_end]
+                _bl_std = np.mean(np.std(_bl_data, axis=1))
+
+                self.sector_null.params[n_x, n_y] = {
+                    'ampli_scaling': _ampli_scaling,
+                    'bl_std': _bl_std
+                }
+
+                # Generate ONE example null trace per condition (for plotting)
+                self.sector_null.dff[n_x, n_y] = {}
+                for tr_cond in ['0', '0.5', '1', '0.5_rew', '0.5_norew']:
+                    _frame_data = self.frame.dff[tr_cond]
+                    n_trials, n_frames = _frame_data.shape
+                    # Generate just ONE example (shape: 1, n_trials, n_frames)
+                    _noise = np.random.normal(
+                        scale=_bl_std, size=(1, n_trials, n_frames))
+                    self.sector_null.dff[n_x, n_y][tr_cond] = \
+                        (_frame_data * _ampli_scaling) + _noise
+
+                _n_trace += 1
+
+        print(f'\t\tsector {self.sector.n_sectors**2}/'
+              f'{self.sector.n_sectors**2}...done')
+        return
+
+    def add_zetatest_neurs(self, frametime_post=2,
+                           zeta_type='2samp'):
+
+        print('adding zetatest for neurs...')
+        # setup structure and calculate on/off times
+        inds_neur = np.where(self.neur.iscell[:, 0] == 1)[0]
+        n_neurs = inds_neur.shape[0]
+
+        framerate = 1 / (self.neur.t[1] - self.neur.t[0])
+        frames_post = np.ceil(frametime_post * framerate)
+
+        t_on_0 = self.beh.stim.t_start[self.beh.tr_inds['0']]
+        t_onoff_0 = np.tile(t_on_0, (2, 1)).T
+        t_onoff_0[:, 1] += 2
+
+        t_on_1 = self.beh.stim.t_start[self.beh.tr_inds['1']]
+        t_onoff_1 = np.tile(t_on_1, (2, 1)).T
+        t_onoff_1[:, 1] += 2
+
+        self.neur.zeta_pval = np.zeros(n_neurs)
+        self.neur.mean_pval = np.zeros(n_neurs)
+        for ind_neur_rel, ind_neur in enumerate(inds_neur):
+            print(f'\tneur={int(ind_neur)}...  ', end='\r')
+            _t = self.neur.t
+            _f = self.neur.f[ind_neur, :]
+
+            if zeta_type == '2samp':
+                _zeta = zetapy.zetatstest2(_t, _f, t_onoff_0,
+                                           _t, _f, t_onoff_1,
+                                           dblUseMaxDur=frames_post)
+            elif zeta_type == '1samp':
+                _zeta = zetapy.zetatstest(_t, _f, t_onoff_1,
+                                          dblUseMaxDur=frames_post)
+
+            self.neur.zeta_pval[ind_neur_rel] = _zeta[1]['dblZetaP']
+            self.neur.mean_pval[ind_neur_rel] = _zeta[1]['dblMeanP']
+        print('')
+
+        return
+
+    def add_zetatest_sectors(self, frametime_post=2,
+                             zeta_type='2samp', channel=None):
+
+        if not hasattr(self, 'sector'):
+            self.add_sectors(channel=channel)
+
+        print('adding zetatest for sectors' +
+              (f' ({channel})' if channel else '') + '...')
+        rec = self._get_rec(channel)
+
+        # setup structure and calculate on/off times
+        n_sectors = self.sector.n_sectors**2
+
+        framerate = 1 / (self.neur.t[1] - self.neur.t[0])
+        frames_post = np.ceil(frametime_post * framerate)
+
+        t_on_0 = self.beh.stim.t_start[self.beh.tr_inds['0']]
+        t_onoff_0 = np.tile(t_on_0, (2, 1)).T
+        t_onoff_0[:, 1] += 2
+
+        t_on_1 = self.beh.stim.t_start[self.beh.tr_inds['1']]
+        t_onoff_1 = np.tile(t_on_1, (2, 1)).T
+        t_onoff_1[:, 1] += 2
+
+        self.sector.zeta_pval = np.zeros(n_sectors)
+        self.sector.mean_pval = np.zeros(n_sectors)
+        _n_sec = 0
+        for n_x in range(self.sector.n_sectors):
+            for n_y in range(self.sector.n_sectors):
+                print(f'\t\tsector {_n_sec}/{n_sectors}...      ',
+                      end='\r')
+
+                _t = self.rec_t
+                _f = np.mean(np.mean(
+                    rec[:,
+                        self.sector.x.lower[n_x, n_y]:
+                        self.sector.x.upper[n_x, n_y],
+                        self.sector.y.lower[n_x, n_y]:
+                        self.sector.y.upper[n_x, n_y]],
+                    axis=1), axis=1)
+
+                if zeta_type == '2samp':
+                    _zeta = zetapy.zetatstest2(_t, _f, t_onoff_0,
+                                               _t, _f, t_onoff_1,
+                                               dblUseMaxDur=frames_post)
+                elif zeta_type == '1samp':
+                    _zeta = zetapy.zetatstest(_t, _f, t_onoff_1,
+                                              dblUseMaxDur=frames_post)
+
+                self.sector.zeta_pval[_n_sec] = _zeta[1]['dblZetaP']
+                self.sector.mean_pval[_n_sec] = _zeta[1]['dblMeanP']
+                _n_sec += 1
+        print('')
+
+        return
+
+    def get_antic_licks_by_trialtype(self, bl_norm=False):
+        _tr_counts = {'0': 0, '0.5': 0, '1': 0}
+        lickrates_hz = {'0': 0, '0.5': 0, '1': 0}
+        for trial in range(self.beh._stimrange.first,
+                           self.beh._stimrange.last):
+            if bl_norm is True:
+                _antic_licks = self.beh.lick.antic_raw[trial] \
+                    - self.beh.lick.base[trial]
+            elif bl_norm is False:
+                _antic_licks = self.beh.lick.antic_raw[trial]
+
+            if self.beh.stim.prob[trial] == 0:
+                lickrates_hz['0'] += _antic_licks
+                _tr_counts['0'] += 1
+            if self.beh.stim.prob[trial] == 0.5:
+                lickrates_hz['0.5'] += _antic_licks
+                _tr_counts['0.5'] += 1
+            if self.beh.stim.prob[trial] == 1:
+                lickrates_hz['1'] += _antic_licks
+                _tr_counts['1'] += 1
+
+        lickrates_hz['0'] /= _tr_counts['0']
+        lickrates_hz['0.5'] /= _tr_counts['0.5']
+        lickrates_hz['1'] /= _tr_counts['1']
+
+        return lickrates_hz
 
     def plt_optimism(self,
                      markersize=20,
@@ -1696,216 +2567,31 @@ class TwoPRec(object):
 
         return
 
-    def add_null_dists(self, n_null=100, auto_run_methods=True,
-                       t_pre=2, t_post=5):
-        """
-        Makes a 'null' distribution based on the alternate hypothesis
-        of no spatial variability in task-related serotonin
-        signaling, but instead spatial variability in 1) GRAB sensor
-        expression; and 2) imaging-related noise.
-
-        Reconstructs a null version of each sector's response as a
-        modified version of the whole-frame response, scaled up/down
-
-        - Must have run plt_stim_aligned_sectors first
-        """
-        print('creating null distributions')
-
-        # check that sector and frame exist
-        print('\trunning checks')
-
-        if not hasattr(self, 'frame'):
-            if auto_run_methods is False:
-                print('Must have run self.add_frame() first!')
-                return
-            elif auto_run_methods is True:
-                self.add_frame(t_pre=t_pre,
-                               t_post=t_post)
-
-        if not hasattr(self, 'sector'):
-            if auto_run_methods is False:
-                print('Must have run self.add_sectors() first!')
-                return
-            elif auto_run_methods is True:
-                self.add_sectors(t_pre=t_pre,
-                                 t_post=t_post)
-
-        # construct the null distribution
-        # Memory-optimized: store only parameters and ONE example trace per
-        # sector (for plotting). Full null distributions are generated
-        # on-the-fly when needed (e.g., in add_psychometrics).
-        self.sector_null = SimpleNamespace()
-        self.sector_null.t = self.sector.t
-        self.sector_null.n_null = n_null
-
-        # Store ONE example null trace per sector/condition (for plt_null_dist)
-        self.sector_null.dff = np.empty(
-            (self.sector.n_sectors, self.sector.n_sectors), dtype=dict)
-
-        # Store parameters for on-the-fly generation
-        self.sector_null.params = np.empty(
-            (self.sector.n_sectors, self.sector.n_sectors), dtype=dict)
-
-        _ind_bl_start = 0
-        _ind_bl_end = np.argmin(np.abs(self.sector.t - 0))
-        ampli_frame = np.max(np.mean(self.frame.dff['1'], axis=0))
-        self.sector_null.ampli_frame = ampli_frame
-
-        print('\tcomputing null parameters for each sector')
-        _n_trace = 0
-        for n_x in range(self.sector.n_sectors):
-            for n_y in range(self.sector.n_sectors):
-                if (_n_trace + 1) % 10 == 0:
-                    print(f'\t\tsector {_n_trace+1}/'
-                          f'{self.sector.n_sectors**2}...',
-                          end='\r')
-
-                # Compute scaling variables (stored for on-the-fly generation)
-                _ampli_sector = np.max(np.mean(
-                    self.sector.dff[n_x, n_y]['1'], axis=0))
-                _ampli_scaling = _ampli_sector / ampli_frame
-
-                # Vectorized baseline std computation
-                _bl_data = self.sector.dff[n_x, n_y]['1'][
-                    :, _ind_bl_start:_ind_bl_end]
-                _bl_std = np.mean(np.std(_bl_data, axis=1))
-
-                self.sector_null.params[n_x, n_y] = {
-                    'ampli_scaling': _ampli_scaling,
-                    'bl_std': _bl_std
-                }
-
-                # Generate ONE example null trace per condition (for plotting)
-                self.sector_null.dff[n_x, n_y] = {}
-                for tr_cond in ['0', '0.5', '1', '0.5_rew', '0.5_norew']:
-                    _frame_data = self.frame.dff[tr_cond] 
-                    n_trials, n_frames = _frame_data.shape
-                    # Generate just ONE example (shape: 1, n_trials, n_frames)
-                    _noise = np.random.normal(
-                        scale=_bl_std, size=(1, n_trials, n_frames))
-                    self.sector_null.dff[n_x, n_y][tr_cond] = \
-                        (_frame_data * _ampli_scaling) + _noise
-
-                _n_trace += 1
-
-        print(f'\t\tsector {self.sector.n_sectors**2}/'
-              f'{self.sector.n_sectors**2}...done')
-        return
-
-    def add_zetatest_neurs(self, frametime_post=2,
-                           zeta_type='2samp'):
-
-        print('adding zetatest for neurs...')
-        # setup structure and calculate on/off times
-        inds_neur = np.where(self.neur.iscell[:, 0] == 1)[0]
-        n_neurs = inds_neur.shape[0]
-
-        framerate = 1 / (self.neur.t[1] - self.neur.t[0])
-        frames_post = np.ceil(frametime_post * framerate)
-
-        t_on_0 = self.beh.stim.t_start[self.beh.tr_inds['0']]
-        t_onoff_0 = np.tile(t_on_0, (2, 1)).T
-        t_onoff_0[:, 1] += 2
-
-        t_on_1 = self.beh.stim.t_start[self.beh.tr_inds['1']]
-        t_onoff_1 = np.tile(t_on_1, (2, 1)).T
-        t_onoff_1[:, 1] += 2
-
-        self.neur.zeta_pval = np.zeros(n_neurs)
-        self.neur.mean_pval = np.zeros(n_neurs)
-        for ind_neur_rel, ind_neur in enumerate(inds_neur):
-            print(f'\tneur={int(ind_neur)}...  ', end='\r')
-            _t = self.neur.t
-            _f = self.neur.f[ind_neur, :]
-
-            if zeta_type == '2samp':
-                _zeta = zetapy.zetatstest2(_t, _f, t_onoff_0,
-                                           _t, _f, t_onoff_1,
-                                           dblUseMaxDur=frames_post)
-            elif zeta_type == '1samp':
-                _zeta = zetapy.zetatstest(_t, _f, t_onoff_1,
-                                          dblUseMaxDur=frames_post)
-
-            self.neur.zeta_pval[ind_neur_rel] = _zeta[1]['dblZetaP']
-            self.neur.mean_pval[ind_neur_rel] = _zeta[1]['dblMeanP']
-        print('')
-
-        return
-
-    def add_zetatest_sectors(self, frametime_post=2,
-                             zeta_type='2samp'):
-
-        if not hasattr(self, 'sector'):
-            self.add_sectors()
-
-        print('adding zetatest for sectors...')
-        # setup structure and calculate on/off times
-        n_sectors = self.sector.n_sectors**2
-
-        framerate = 1 / (self.neur.t[1] - self.neur.t[0])
-        frames_post = np.ceil(frametime_post * framerate)
-
-        t_on_0 = self.beh.stim.t_start[self.beh.tr_inds['0']]
-        t_onoff_0 = np.tile(t_on_0, (2, 1)).T
-        t_onoff_0[:, 1] += 2
-
-        t_on_1 = self.beh.stim.t_start[self.beh.tr_inds['1']]
-        t_onoff_1 = np.tile(t_on_1, (2, 1)).T
-        t_onoff_1[:, 1] += 2
-
-        self.sector.zeta_pval = np.zeros(n_sectors)
-        self.sector.mean_pval = np.zeros(n_sectors)
-        _n_sec = 0
-        for n_x in range(self.sector.n_sectors):
-            for n_y in range(self.sector.n_sectors):
-                print(f'\t\tsector {_n_sec}/{n_sectors}...      ',
-                      end='\r')
-
-                _t = self.rec_t
-                _f = np.mean(np.mean(
-                    self.rec[:,
-                             self.sector.x.lower[n_x, n_y]:
-                             self.sector.x.upper[n_x, n_y],
-                             self.sector.y.lower[n_x, n_y]:
-                             self.sector.y.upper[n_x, n_y]],
-                    axis=1), axis=1)
-
-                if zeta_type == '2samp':
-                    _zeta = zetapy.zetatstest2(_t, _f, t_onoff_0,
-                                               _t, _f, t_onoff_1,
-                                               dblUseMaxDur=frames_post)
-                elif zeta_type == '1samp':
-                    _zeta = zetapy.zetatstest(_t, _f, t_onoff_1,
-                                              dblUseMaxDur=frames_post)
-
-                self.sector.zeta_pval[_n_sec] = _zeta[1]['dblZetaP']
-                self.sector.mean_pval[_n_sec] = _zeta[1]['dblMeanP']
-                _n_sec += 1
-        print('')
-
-        return
-
     def plt_null_dist(self,
                       figsize=(6, 3),
                       img_ds_factor=50,
                       img_alpha=0.5,
+                      channel=None,
                       plt_dff={'x': {'gain': 0.6,
                                      'offset': 0.2},
                                'y': {'gain': 10,
                                      'offset': 0.2}}):
+        rec = self._get_rec(channel)
+
         fig = plt.figure(figsize=figsize)
         spec = gs.GridSpec(nrows=1, ncols=2,
                            figure=fig)
 
         ax_dff = fig.add_subplot(spec[0, 0])
-        ax_dff.set_title('dff')
+        ax_dff.set_title('dff' + (f' ({channel})' if channel else ''))
         ax_dff_null = fig.add_subplot(spec[0, 1])
-        ax_dff_null.set_title('dff null')
+        ax_dff_null.set_title('dff null'
+                              + (f' ({channel})' if channel else ''))
 
         n_sectors = self.sector.n_sectors
 
         print('\tcreating max projection image...')
-        _rec_max = np.max(self.rec[::img_ds_factor, :, :], axis=0)
+        _rec_max = np.max(rec[::img_ds_factor, :, :], axis=0)
         _rec_max[:, ::int(_rec_max.shape[0]/n_sectors)] = 0
         _rec_max[::int(_rec_max.shape[0]/n_sectors), :] = 0
 
@@ -1951,10 +2637,11 @@ class TwoPRec(object):
                         color=self.sector.colors[stim_cond],
                         linestyle=self.sector.linestyle[stim_cond])
 
+        _ch_str = f'_{channel}' if channel else ''
         fig.savefig(os.path.join(
             os.getcwd(), 'figs_mbl',
             f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + 'null_dists.pdf'))
+            + f'{_ch_str}null_dists.pdf'))
 
         plt.show()
 
@@ -2062,1007 +2749,6 @@ class TwoPRec(object):
         # show
         # -------
         plt.show()
-
-        return
-
-    def plt_frame(self,
-                  figsize=(3.43, 2),
-                  t_pre=2, t_post=5,
-                  colors=sns.cubehelix_palette(
-                      n_colors=3,
-                      start=2, rot=0,
-                      dark=0.1, light=0.6),
-                  plot_type=None,
-                  plt_show=True,
-                  channel=None,
-                  use_zscore=False):
-
-        """
-        Plots the average fluorescence across the whole fov,
-        separated by trial-type (eg 0%, 50%, 100% rewarded trials).
-
-        Delegates data extraction to self.add_frame().
-
-        Parameters
-        ----------
-        plot_type : str or None
-            None: plots 0, 0.5, 1
-            'rew_norew': plots 0.5_rew, 0.5_norew
-            'prelick_noprelick': plots 0.5_prelick, 0.5_noprelick
-        channel : str or None
-            Passed to add_frame() / _get_rec(). Ignored in the base class.
-        use_zscore : bool
-            Passed to add_frame(). If True, use z-score instead of df/f.
-        """
-        self.add_frame(t_pre=t_pre, t_post=t_post,
-                       channel=channel, use_zscore=use_zscore)
-
-        # build color and linestyle maps
-        if hasattr(self.beh, 'tr_conds_outcome'):
-            _cmap = sns.cubehelix_palette(
-                as_cmap=True, start=2, rot=0, dark=0.1, light=0.6)
-            _max = np.max(self.beh.tr_conds_outcome)
-            colors = {str(p): _cmap(self.beh.tr_conds_outcome[i] / _max)
-                      for i, p in enumerate(self.beh._stimparser.parsed_param)}
-        else:
-            _palette = sns.cubehelix_palette(
-                n_colors=len(self.beh.tr_inds), start=2, rot=0,
-                dark=0.1, light=0.6)
-            colors = {k: _palette[i] for i, k in enumerate(self.beh.tr_inds)}
-        linestyles = {k: 'solid' for k in self.beh.tr_inds}
-        if '0.5_norew' in linestyles:
-            linestyles['0.5_norew'] = 'dashed'
-        if '0.5_noprelick' in linestyles:
-            linestyles['0.5_noprelick'] = 'dashed'
-
-        fig_avg = plt.figure(figsize=figsize)
-        spec = gs.GridSpec(nrows=1, ncols=1,
-                           figure=fig_avg)
-        ax_trace = fig_avg.add_subplot(spec[0, 0])
-
-        # determine which conditions to plot
-        if plot_type is None:
-            stim_conds = list(self.beh.tr_conds)
-        elif plot_type == 'rew_norew':
-            stim_conds = ['0.5_rew', '0.5_norew']
-        elif plot_type == 'prelick_noprelick':
-            stim_conds = ['0.5_prelick', '0.5_noprelick']
-        else:
-            stim_conds = list(self.beh.tr_conds)
-
-        # plot stim-aligned traces
-        for stim_cond in stim_conds:
-            if stim_cond not in self.frame.dff:
-                continue
-            _color = colors.get(stim_cond, 'grey')
-            _ls = linestyles.get(stim_cond, 'solid')
-            ax_trace.plot(self.frame.t,
-                          np.mean(self.frame.dff[stim_cond], axis=0),
-                          color=_color,
-                          linestyle=_ls)
-            ax_trace.fill_between(
-                self.frame.t,
-                np.mean(self.frame.dff[stim_cond], axis=0) -
-                np.std(self.frame.dff[stim_cond], axis=0),
-                np.mean(self.frame.dff[stim_cond], axis=0) +
-                np.std(self.frame.dff[stim_cond], axis=0),
-                facecolor=_color,
-                alpha=0.2)
-
-        # plot rew and stim onset markers
-        ax_trace.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
-                         linewidth=1.5, alpha=0.8)
-        ax_trace.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
-                         linewidth=1.5, alpha=0.8)
-
-        ax_trace.set_xlabel('time (s)')
-        ax_trace.set_ylabel('z-score' if use_zscore else 'df/f')
-
-        _ch_suffix = f'ch={channel}' if channel is not None else \
-            (f'ch={self.ch_img}' if hasattr(self, 'ch_img') else '')
-        corr_suffix = ''
-        if channel == 'grn' and hasattr(self, 'rec_t_grn') \
-           and hasattr(self, 'corr_sig_method'):
-            corr_suffix = f'_corr={self.corr_sig_method}'
-        zscore_suffix = '_zscore' if use_zscore else ''
-        fig_avg.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'{_ch_suffix}{corr_suffix}{zscore_suffix}_mean_trial_activity.pdf'))
-
-        if plt_show:
-            plt.show()
-        else:
-            plt.close(fig_avg)
-
-    def plt_sectors(self,
-                    n_sectors=10,
-                    t_pre=2, t_post=5,
-                    plot_type=None,
-                    resid_type='sector',
-                    resid_tr_cond='1',
-                    resid_alpha=0.5,
-                    resid_smooth=True,
-                    resid_smooth_windlen=5,
-                    resid_smooth_polyorder=3,
-                    resid_trial_nbins=30,
-                    figsize=(6, 6),
-                    img_ds_factor=50,
-                    img_alpha=0.5,
-                    plt_dff={'x': {'gain': 0.6,
-                                   'offset': 0.2},
-                             'y': {'gain': 10,
-                                   'offset': 0.2}},
-                    plt_prefix='',
-                    plt_show=True,
-                    channel=None,
-                    use_zscore=False,
-                    outlier_thresh=None,
-                    auto_gain_dff=False,
-                    minimal_output=False,
-                    colors=sns.cubehelix_palette(
-                        n_colors=3,
-                        start=2, rot=0,
-                        dark=0.2, light=0.8)):
-        """
-        Divides the field of view into sectors, and plots a set of trial-types
-        separately within each sector.
-
-        plot_type controls the type of plot:
-            if plot_type is None:
-                stim_list = ['0', '0.5', '1']
-            elif plot_type == 'rew_norew':
-                stim_list = ['0.5_rew', '0.5_norew']
-            elif plot_type == 'prelick_noprelick':
-                stim_list = ['0.5_prelick', '0.5_noprelick']
-            elif plot_type == 'rew':
-                stim_list = ['0', '0.5_rew', '1']
-        """
-        # resolve outlier threshold
-        if outlier_thresh is None:
-            outlier_thresh = 20 if use_zscore else 1
-
-        rec = self._get_rec(channel)
-        rec_t = self._get_rec_t(channel)
-
-        print('creating trial-averaged signal (sectors)...')
-        self.add_lickrates(t_prestim=t_pre,
-                           t_poststim=t_post)
-
-        # ---- n_frames must be known before the cache check ----
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int((2 + t_post) * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
-
-        _use_zscore = use_zscore
-        if not _use_zscore and self.beh._stimrange.first < self.beh._stimrange.last:
-            _t0 = self.beh.stim.t_start[self.beh._stimrange.first]
-            _ind0 = np.argmin(np.abs(rec_t - (_t0 - t_pre)))
-            _probe = np.mean(np.mean(
-                rec[_ind0:_ind0 + n_frames_pre, :, :], axis=1), axis=1)
-            _f0_probe = float(np.mean(_probe)) if _probe.size > 0 else 1.0
-            if np.abs(_f0_probe) < 1.0:
-                print(f'\tWarning: baseline fluorescence mean ({_f0_probe:.4f}) '
-                      'is near zero. Signal appears to be a corrected residual. '
-                      'Falling back to z-score. Pass use_zscore=True explicitly '
-                      'to suppress this check.')
-                _use_zscore = True
-
-        if _use_zscore and not auto_gain_dff:
-            auto_gain_dff = True
-
-        # compute whole-frame avg in case needed
-        if (not hasattr(self, 'frame')
-                or self.frame.params.use_zscore != _use_zscore
-                or self.frame.params.channel != channel):
-            self.add_frame(t_pre=t_pre, t_post=t_post,
-                           channel=channel, use_zscore=_use_zscore)
-
-        # determine stim_list once (needed by auto_gain_dff and plotting)
-        if plot_type is None:
-            stim_list = ['0', '0.5', '1']
-        elif plot_type == 'rew_norew':
-            stim_list = ['0.5_rew', '0.5_norew']
-        elif plot_type == 'prelick_noprelick':
-            stim_list = ['0.5_prelick', '0.5_noprelick']
-        elif plot_type == 'rew':
-            stim_list = ['0', '0.5_rew', '1']
-
-        # ---- check if sector data from add_sectors() can be reused ----
-        _sector_cache_valid = (
-            hasattr(self, 'sector')
-            and hasattr(self.sector, 'dff')
-            and hasattr(self.sector, 'params')
-            and self.sector.n_sectors == n_sectors
-            and self.sector.params.t_rew_pre == t_pre
-            and self.sector.params.t_rew_post == t_post
-            and self.sector.params.channel == channel
-            and self.sector.params.use_zscore == _use_zscore
-            and isinstance(self.sector.dff[0, 0], dict)
-        )
-
-        if _sector_cache_valid:
-            print('\treusing cached sector data from add_sectors()...')
-            self.sector.colors = {'0': colors[0],
-                                  '0.5': colors[1],
-                                  '1': colors[2],
-                                  '0.5_rew': colors[1],
-                                  '0.5_norew': colors[1],
-                                  '0.5_prelick': colors[1],
-                                  '0.5_noprelick': colors[1]}
-            self.sector.linestyle = {'0': 'solid',
-                                     '0.5': 'solid',
-                                     '1': 'solid',
-                                     '0.5_rew': 'solid',
-                                     '0.5_norew': 'dashed',
-                                     '0.5_prelick': 'solid',
-                                     '0.5_noprelick': 'dashed'}
-            self.sector.params.use_zscore = _use_zscore
-            if getattr(self.sector.params, 'resid_type', None) != resid_type:
-                print('\trecomputing residuals (resid_type changed)...')
-                for n_x in range(n_sectors):
-                    for n_y in range(n_sectors):
-                        for tr_cond in ['0', '0.5', '1']:
-                            for tr in range(
-                                    self.sector.dff[n_x, n_y][tr_cond].shape[0]):
-                                if resid_type == 'sector':
-                                    _dff_mean = np.mean(
-                                        self.sector.dff[n_x, n_y][tr_cond],
-                                        axis=0)
-                                elif resid_type == 'trial':
-                                    _dff_mean = self.frame.dff[tr_cond][tr, :]
-                                self.sector.dff_resid[n_x, n_y][tr_cond][tr, :] = (
-                                    self.sector.dff[n_x, n_y][tr_cond][tr, :]
-                                    - _dff_mean)
-                self.sector.params.resid_type = resid_type
-
-        else:
-            # ---- full extraction (cache miss) ----
-            self.sector = SimpleNamespace()
-
-            self.sector.params = SimpleNamespace()
-            self.sector.n_sectors = n_sectors
-            self.sector.params.t_rew_pre = t_pre
-            self.sector.params.t_rew_post = t_post
-            self.sector.params.channel = channel
-            self.sector.params.use_zscore = _use_zscore
-            self.sector.params.resid_type = resid_type
-            self.sector.n_sectors = n_sectors
-
-            self.sector.colors = {'0': colors[0],
-                                  '0.5': colors[1],
-                                  '1': colors[2],
-                                  '0.5_rew': colors[1],
-                                  '0.5_norew': colors[1],
-                                  '0.5_prelick': colors[1],
-                                  '0.5_noprelick': colors[1]}
-            self.sector.linestyle = {'0': 'solid',
-                                     '0.5': 'solid',
-                                     '1': 'solid',
-                                     '0.5_rew': 'solid',
-                                     '0.5_norew': 'dashed',
-                                     '0.5_prelick': 'solid',
-                                     '0.5_noprelick': 'dashed'}
-
-            self.sector.dff = np.empty((n_sectors, n_sectors), dtype=dict)
-            self.sector.dff_resid = np.empty((n_sectors, n_sectors), dtype=dict)
-
-            self.sector.t = np.linspace(
-                -1*t_pre, 2+t_post, n_frames_tot)
-
-            # store edges of sectors
-            self.sector.x = SimpleNamespace()
-            self.sector.x.lower = np.zeros((n_sectors, n_sectors))
-            self.sector.x.upper = np.zeros((n_sectors, n_sectors))
-            self.sector.y = SimpleNamespace()
-            self.sector.y.lower = np.zeros((n_sectors, n_sectors))
-            self.sector.y.upper = np.zeros((n_sectors, n_sectors))
-
-            # ---------------------
-            print('\textracting aligned fluorescence traces...')
-            _n_trace = 1
-            for n_x in range(n_sectors):
-                for n_y in range(n_sectors):
-                    print(f'\t\tsector {_n_trace}/{n_sectors**2}...      ')
-                    # calculate location of sector
-                    _ind_x_lower = int((n_x / n_sectors) * rec.shape[1])
-                    _ind_x_upper = int(((n_x+1) / n_sectors) * rec.shape[1])
-
-                    _ind_y_lower = int((n_y / n_sectors) * rec.shape[1])
-                    _ind_y_upper = int(((n_y+1) / n_sectors) * rec.shape[1])
-
-                    self.sector.x.lower[n_x, n_y] = _ind_x_lower
-                    self.sector.x.upper[n_x, n_y] = _ind_x_upper
-                    self.sector.y.lower[n_x, n_y] = _ind_y_lower
-                    self.sector.y.upper[n_x, n_y] = _ind_y_upper
-
-                    # setup structure
-                    self.sector.dff[n_x, n_y] = {}
-                    self.sector.dff_resid[n_x, n_y] = {}
-
-                    for tr_cond in ['0', '0.5', '1', '0.5_rew',
-                                    '0.5_norew', '0.5_prelick', '0.5_noprelick']:
-                        self.sector.dff[n_x, n_y][tr_cond] = np.zeros((
-                            self.beh.tr_inds[tr_cond].shape[0], n_frames_tot))
-                        self.sector.dff_resid[n_x, n_y][tr_cond] = np.zeros_like(
-                            self.sector.dff[n_x, n_y][tr_cond])
-
-                    # store stim-aligned traces
-                    self.sector.tr_counts = {'0': 0, '0.5': 0, '1': 0,
-                                             '0.5_rew': 0, '0.5_norew': 0,
-                                             '0.5_prelick': 0,
-                                             '0.5_noprelick': 0}
-                    for trial in range(self.beh._stimrange.first,
-                                       self.beh._stimrange.last):
-                        print(f'\t\t\t{trial=}', end='\r')
-                        _t_stim = self.beh.stim.t_start[trial]
-                        _t_start = _t_stim - t_pre
-                        _t_end = self.beh._data.get_event_var(
-                            'totalRewardTimes')[trial] + t_post
-
-                        _ind_t_start = np.argmin(np.abs(
-                            rec_t - _t_start))
-                        _ind_t_end = np.argmin(np.abs(
-                            rec_t - _t_end)) + 2   # add frames to end
-
-                        # extract fluorescence
-                        _f = np.mean(np.mean(
-                            rec[_ind_t_start:_ind_t_end,
-                                     _ind_x_lower:_ind_x_upper,
-                                     _ind_y_lower:_ind_y_upper], axis=1),
-                                     axis=1)
-                        if _use_zscore:
-                            _baseline = _f[:n_frames_pre]
-                            _sigma = np.std(_baseline)
-                            _dff = (_f - np.mean(_baseline)) / _sigma \
-                                if _sigma > 0 else np.zeros_like(_f)
-                        else:
-                            _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                        if self.beh.stim.prob[trial] == 0:
-                            self.sector.dff[n_x, n_y]['0'][
-                                self.sector.tr_counts['0'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0'] += 1
-                        elif self.beh.stim.prob[trial] == 0.5:
-                            self.sector.dff[n_x, n_y]['0.5'][
-                                self.sector.tr_counts['0.5'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5'] += 1
-                        elif self.beh.stim.prob[trial] == 1:
-                            self.sector.dff[n_x, n_y]['1'][
-                                self.sector.tr_counts['1'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['1'] += 1
-
-                        if self.beh.stim.prob[trial] == 0.5 \
-                           and self.beh.rew.delivered[trial] == 1:
-                            self.sector.dff[n_x, n_y]['0.5_rew'][
-                                self.sector.tr_counts['0.5_rew'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_rew'] += 1
-                        elif self.beh.stim.prob[trial] == 0.5 \
-                             and self.beh.rew.delivered[trial] == 0:
-                            self.sector.dff[n_x, n_y]['0.5_norew'][
-                                self.sector.tr_counts['0.5_norew'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_norew'] += 1
-
-                        if self.beh.stim.prob[trial] == 0.5 \
-                           and self.beh.lick.antic_raw[trial] > 0:
-                            self.sector.dff[n_x, n_y]['0.5_prelick'][
-                                self.sector.tr_counts['0.5_prelick'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_prelick'] += 1
-                        elif self.beh.stim.prob[trial] == 0.5 \
-                             and self.beh.lick.antic_raw[trial] == 0:
-                            self.sector.dff[n_x, n_y]['0.5_noprelick'][
-                                self.sector.tr_counts['0.5_noprelick'], :] \
-                                = _dff[0:n_frames_tot]
-                            self.sector.tr_counts['0.5_noprelick'] += 1
-
-                    # store dff residuals
-                    # ----------
-                    for tr_cond in ['0', '0.5', '1']:
-                        for tr in range(
-                                self.sector.dff[n_x, n_y][tr_cond].shape[0]):
-                            if resid_type == 'sector':
-                                _dff_mean = np.mean(
-                                    self.sector.dff[n_x, n_y][tr_cond], axis=0)
-                            elif resid_type == 'trial':
-                                _dff_mean = self.frame.dff[tr_cond][tr, :]
-
-                            self.sector.dff_resid[n_x, n_y][tr_cond][tr, :] \
-                                = self.sector.dff[n_x, n_y][tr_cond][tr, :] \
-                                - _dff_mean
-
-                    _n_trace += 1
-
-        # ---- figure creation ----
-        fig_avg = plt.figure(figsize=figsize)
-        spec_avg = gs.GridSpec(nrows=1, ncols=1,
-                               figure=fig_avg)
-        ax_img = fig_avg.add_subplot(spec_avg[0, 0])
-
-        fig_resid = None
-        ax_img_resid = None
-        if not minimal_output:
-            fig_resid = plt.figure(figsize=figsize)
-            spec_resid = gs.GridSpec(nrows=1, ncols=1,
-                                     figure=fig_resid)
-            ax_img_resid = fig_resid.add_subplot(spec_resid[0, 0])
-
-        print('\tcreating max projection image...')
-        _rec_max = np.max(rec[::img_ds_factor, :, :], axis=0)
-        _rec_max[:, ::int(_rec_max.shape[0]/n_sectors)] = 0
-        _rec_max[::int(_rec_max.shape[0]/n_sectors), :] = 0
-
-        ax_img.imshow(_rec_max,
-                      extent=[0, n_sectors,
-                              n_sectors, 0],
-                      alpha=img_alpha)
-        if not minimal_output:
-            ax_img_resid.imshow(_rec_max,
-                                extent=[0, n_sectors,
-                                        n_sectors, 0],
-                                alpha=img_alpha)
-            ax_img_resid.set_title(f'residuals vs mean({resid_type}),'
-                                   + f' p(rew)={resid_tr_cond}')
-
-        # ---- auto-gain: set y-gain from global max across all sectors ----
-        if auto_gain_dff:
-            _max_pos = 0.0
-            for _gx in range(n_sectors):
-                for _gy in range(n_sectors):
-                    for _sc in stim_list:
-                        if _sc in self.sector.dff[_gx, _gy]:
-                            _med = np.median(
-                                self.sector.dff[_gx, _gy][_sc], axis=0)
-                            _max_pos = max(_max_pos, float(np.max(_med)))
-            if _max_pos > 0:
-                _offset = plt_dff['y']['offset']
-                plt_dff = dict(plt_dff)
-                plt_dff['y'] = dict(plt_dff['y'])
-                plt_dff['y']['gain'] = (1.0 - _offset) / _max_pos
-
-        # ---- PASS 2: plot all sectors ----
-        for n_x in range(n_sectors):
-            for n_y in range(n_sectors):
-
-                # **************************
-                # plotting for this sector
-                # **************************
-
-                # make sector plot of stim-aligned traces
-                # ----------
-                _t_sector = ((self.sector.t / self.sector.t[-1])
-                             * plt_dff['x']['gain'])
-                _t_sector = _t_sector + n_x + plt_dff['x']['offset']
-
-                for stim_cond in stim_list:
-                    _dff_mean = np.median(self.sector.dff[n_x, n_y][stim_cond],
-                                          axis=0)
-                    _dff_shifted = (-1 * _dff_mean * plt_dff['y']['gain']) \
-                        + n_y - plt_dff['y']['offset'] + 1
-
-                    if np.max(np.abs(_dff_mean)) < outlier_thresh:
-                        ax_img.plot(
-                            _t_sector, _dff_shifted,
-                            color=self.sector.colors[stim_cond],
-                            linestyle=self.sector.linestyle[stim_cond])
-
-                # make residuals plot (skip in minimal mode)
-                # ------------------------
-                if not minimal_output:
-                    _n_tr_resid = self.sector.dff_resid[n_x, n_y][
-                        resid_tr_cond].shape[0]
-                    for trial in range(_n_tr_resid):
-                        _dff = self.sector.dff_resid[n_x, n_y][resid_tr_cond][trial, :]
-                        if resid_smooth is True:
-                            _dff = sp.signal.savgol_filter(_dff, resid_smooth_windlen,
-                                                           resid_smooth_polyorder)
-                        _dff_shifted = (-1 * _dff * plt_dff['y']['gain']) \
-                            + n_y - plt_dff['y']['offset'] + 1
-
-                        if np.max(np.abs(_dff)) < outlier_thresh:
-                            ax_img_resid.plot(
-                                _t_sector, _dff_shifted,
-                                color=sns.color_palette('rocket', _n_tr_resid)[trial],
-                                alpha=resid_alpha,
-                                linestyle=self.sector.linestyle[stim_cond])
-
-                # plot rew and stim lines
-                # ------------
-                _t_stim = (0 * plt_dff['x']['gain']) \
-                    + n_x + plt_dff['x']['offset']
-                _t_rew = ((2 / self.sector.t[-1])
-                          * plt_dff['x']['gain']) \
-                    + n_x + plt_dff['x']['offset']
-                _dff_zero = n_y - plt_dff['y']['offset'] + 1
-
-                ax_img.plot([_t_stim, _t_stim],
-                            [n_y + 0.2, n_y + 0.8],
-                            color=sns.xkcd_rgb['dark grey'],
-                            linewidth=1,
-                            linestyle='dashed')
-                ax_img.plot([_t_rew, _t_rew],
-                            [n_y + 0.2, n_y + 0.8],
-                            color=sns.xkcd_rgb['bright blue'],
-                            linewidth=1,
-                            linestyle='dashed')
-                if not minimal_output and ax_img_resid is not None:
-                    ax_img_resid.plot([_t_stim, _t_stim],
-                                      [n_y + 0.2, n_y + 0.8],
-                                      color=sns.xkcd_rgb['dark grey'],
-                                      linewidth=1,
-                                      linestyle='dashed')
-                    ax_img_resid.plot([_t_rew, _t_rew],
-                                      [n_y + 0.2, n_y + 0.8],
-                                      color=sns.xkcd_rgb['bright blue'],
-                                      linewidth=1,
-                                      linestyle='dashed')
-                    ax_img_resid.plot([_t_stim, _t_rew],
-                                      [_dff_zero, _dff_zero],
-                                      color='k',
-                                      linewidth=1,
-                                      linestyle='dashed')
-
-        corr_suffix = ''
-        if channel == 'grn' and hasattr(self, 'rec_t_grn') \
-           and hasattr(self, 'corr_sig_method'):
-            corr_suffix = f'_corr={self.corr_sig_method}'
-        zscore_suffix = f'_zscore={_use_zscore}'
-
-        # save main figure
-        fig_avg.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            'sectors_'
-            + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{plt_prefix}_'
-            + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-            + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
-
-        # compute and save supplemental plots (skip in minimal mode)
-        # ---------------
-        if not minimal_output:
-            n_trs = self.sector.dff_resid[0, 0][resid_tr_cond].shape[0]
-            n_rows = np.ceil(np.sqrt(n_trs)).astype(int)
-
-            fig_norm_sec_sig = plt.figure(figsize=(3.43, 1.5))
-            spec_norm_sec_sig = gs.GridSpec(nrows=1, ncols=3,
-                                            figure=fig_norm_sec_sig)
-            ax_norm_sec_sig_prew = {}
-            ax_norm_sec_sig_prew['0'] = fig_norm_sec_sig.add_subplot(
-                spec_norm_sec_sig[0, 0])
-            ax_norm_sec_sig_prew['0.5'] = fig_norm_sec_sig.add_subplot(
-                spec_norm_sec_sig[0, 1])
-            ax_norm_sec_sig_prew['1'] = fig_norm_sec_sig.add_subplot(
-                spec_norm_sec_sig[0, 2])
-
-            fig_resid_corr = plt.figure(figsize=figsize)
-            spec_resid_corr = gs.GridSpec(nrows=1, ncols=1,
-                                          figure=fig_resid_corr)
-            ax_resid_corr = fig_resid_corr.add_subplot(spec_resid_corr[0, 0])
-
-            fig_resid_corr_spatial = plt.figure(figsize=figsize)
-            spec_resid_corr_spatial = gs.GridSpec(
-                nrows=self.sector.n_sectors,
-                ncols=self.sector.n_sectors,
-                figure=fig_resid_corr_spatial)
-
-            fig_resid_tr_sep = plt.figure(figsize=figsize)
-            spec_resid_tr_sep = gs.GridSpec(nrows=n_rows,
-                                            ncols=n_rows,
-                                            figure=fig_resid_tr_sep)
-
-            # compute and plot trial-averaged, normalized signals for each sector
-            for sec in range(self.sector.n_sectors):
-                sec_x, sec_y = np.divmod(sec, self.sector.n_sectors)
-
-                for tr_type in ['0', '0.5', '1']:
-                    _n_tr = self.sector.dff[0, 0][tr_type].shape[0]
-                    _sec_max = np.max(self.sector.dff[sec_x, sec_y][tr_type],
-                                      axis=1)
-                    _sec_sig = np.array([self.sector.dff[sec_x, sec_y][tr_type][
-                        tr, :] / _sec_max[tr] for tr in range(_n_tr)])
-                    _sec_sig_travg = np.mean(_sec_sig, axis=0)
-                    ax_norm_sec_sig_prew[tr_type].plot(
-                        self.sector.t,
-                        _sec_sig_travg,
-                        color=self.sector.colors[tr_type],
-                        alpha=0.8)
-
-            # compute and plot cross-correlations
-            self.sector.resid_corr_stat = np.zeros(
-                (self.sector.n_sectors**2, self.sector.n_sectors**2))
-            self.sector.resid_corr_pval = np.zeros(
-                (self.sector.n_sectors**2, self.sector.n_sectors**2))
-
-            for sec_1 in range(self.sector.n_sectors**2):
-                for sec_2 in range(self.sector.n_sectors**2):
-                    sec_1_x, sec_1_y = np.divmod(sec_1, self.sector.n_sectors)
-                    sec_2_x, sec_2_y = np.divmod(sec_2, self.sector.n_sectors)
-
-                    _sec_1_sig = np.mean(
-                        self.sector.dff_resid[sec_1_x, sec_1_y][resid_tr_cond],
-                        axis=1)
-                    _sec_2_sig = np.mean(
-                        self.sector.dff_resid[sec_2_x, sec_2_y][resid_tr_cond],
-                        axis=1)
-
-                    _corr = sp.stats.pearsonr(_sec_1_sig, _sec_2_sig)
-                    self.sector.resid_corr_stat[sec_1, sec_2] = _corr.statistic
-                    self.sector.resid_corr_pval[sec_1, sec_2] = _corr.pvalue
-
-            ax_resid_corr.imshow(self.sector.resid_corr_stat)
-
-            ax_residcorr_spatial = []
-            ax_count = 0
-            for sec_1 in range(self.sector.n_sectors):
-                for sec_2 in range(self.sector.n_sectors):
-                    ax_residcorr_spatial.append(
-                        fig_resid_corr_spatial.add_subplot(
-                            spec_resid_corr_spatial[sec_1, sec_2]))
-                    ax_residcorr_spatial[ax_count].imshow(
-                        self.sector.resid_corr_stat[ax_count, :].reshape(
-                            self.sector.n_sectors, self.sector.n_sectors),
-                        vmax=1, vmin=-1, cmap='coolwarm')
-                    ax_residcorr_spatial[ax_count].set_xticks([])
-                    ax_residcorr_spatial[ax_count].set_yticks([])
-
-                    ax_count += 1
-
-            fig_resid_corr_spatial.suptitle('residual corrs (spatial), '
-                                            + f' {resid_tr_cond=},'
-                                            + f' residuals vs mean({resid_type})')
-
-            # compute and plot per-trial residual distributions
-            ax = []
-            for tr in range(n_trs):
-                # compile response of all sectors for this trial
-                _sector_dff_resid = []
-                for sec_1 in range(self.sector.n_sectors):
-                    for sec_2 in range(self.sector.n_sectors):
-                        _sector_dff_resid.append(np.mean(
-                            self.sector.dff_resid[sec_1, sec_2][
-                                resid_tr_cond][tr, :]))
-
-                # set up axis
-                _tr_x, _tr_y = np.divmod(tr, n_rows)
-                if tr == 0:
-                    ax.append(fig_resid_tr_sep.add_subplot(
-                        spec_resid_tr_sep[_tr_x, _tr_y]))
-                elif tr > 0:
-                    ax.append(fig_resid_tr_sep.add_subplot(
-                        spec_resid_tr_sep[_tr_x, _tr_y],
-                              sharex=ax[0], sharey=ax[0]))
-
-                # plot per-trial distributions
-                ax[tr].hist(_sector_dff_resid, bins=resid_trial_nbins,
-                            histtype='step',
-                            density=True, color=sns.xkcd_rgb['dark grey'])
-                ax[tr].axvline(0, color='k',
-                               linewidth=1,
-                               linestyle='dashed')
-                ax[tr].set_xlabel('dff resid.')
-                ax[tr].set_ylabel('pdf')
-                ax[tr].set_title(f'trial={tr}')
-            fig_resid_tr_sep.suptitle(f'residuals vs mean{resid_type} corrs (spatial), '
-                                            + f' {resid_tr_cond=},'
-                                            + f' residuals vs mean({resid_type})')
-
-            # save supplemental figs
-            fig_norm_sec_sig.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                'sectors_normed_'
-                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{plt_prefix}_'
-                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
-
-            fig_resid.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                'sectors_resid_'
-                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{plt_prefix}_'
-                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-                + f'{resid_tr_cond=}_{resid_type=}_'
-                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
-
-            fig_resid_corr.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                'sectors_resid_corr_'
-                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{plt_prefix}_'
-                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-                + f'{resid_tr_cond=}_{resid_type=}_'
-                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
-
-            fig_resid_corr_spatial.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                'sectors_resid_corr_spatial_'
-                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{plt_prefix}_'
-                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-                + f'{resid_tr_cond=}_{resid_type=}_'
-                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
-
-            fig_resid_tr_sep.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                'sectors_resid_trial_sep_'
-                + f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{plt_prefix}_'
-                + f'{n_sectors=}_{plot_type=}_{t_pre=}_{t_post=}_'
-                + f'{resid_tr_cond=}_{resid_type=}_'
-                + f'ch={channel}{corr_suffix}{zscore_suffix}.pdf'))
-
-        # show/close plots
-        if plt_show is True:
-            plt.show()
-        elif plt_show is False:
-            plt.close(fig_avg)
-            if not minimal_output:
-                for _fig in [fig_norm_sec_sig, fig_resid,
-                             fig_resid_corr, fig_resid_corr_spatial,
-                             fig_resid_tr_sep]:
-                    if _fig is not None:
-                        plt.close(_fig)
-
-        return
-
-    def plt_neurs(self, t_pre=1, t_post=2,
-                  figsize=(3.43, 3.43), zscore=False,
-                  plt_equal=True,
-                  sort_by='trial_type',
-                  sort_tr_type='max',
-                  cmap=sns.diverging_palette(
-                      220, 20, as_cmap=True)):
-        """
-        Plots trial-averaged neural activity (dff) for each cell as a heatmap,
-        one column per trial condition.
-
-        Parameters
-        ----------
-        sort_tr_type : str
-            Trial condition key used to sort neurons when sort_by='trial_type'.
-            Can be any key present in self.beh.tr_conds, or one of two
-            special strings:
-                'max' : automatically uses the tr_cond with the highest outcome
-                        value in self.beh.tr_conds_outcome.
-                'min' : automatically uses the tr_cond with the lowest outcome
-                        value in self.beh.tr_conds_outcome.
-        """
-        # plot neuron masks
-        self.plt_neur_masks(show=False)
-
-        self.add_lickrates(t_prestim=t_pre,
-                           t_poststim=t_post)
-
-        # setup structure
-        # ---------------
-        neurs = np.where(self.neur.iscell[:, 0] == 1)[0]
-        n_neurs = neurs.shape[0]
-
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int((2 + t_post) * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
-
-        # resolve 'max'/'min' sort_tr_type to the corresponding tr_cond
-        if sort_tr_type in ('max', 'min'):
-            _outcomes = self.beh.tr_conds_outcome
-            _pick = np.argmax(_outcomes) if sort_tr_type == 'max' \
-                else np.argmin(_outcomes)
-            sort_tr_type = self.beh.tr_conds[_pick]
-
-        _tr_conds_all = list(self.beh.tr_inds.keys())
-        _tr_conds_plot = list(self.beh.tr_conds)
-
-        self.neur.dff_aln = np.empty(n_neurs, dtype=dict)
-        self.neur.dff_aln_mean = {}
-        for _tr_cond in _tr_conds_all:
-            self.neur.dff_aln_mean[_tr_cond] = np.zeros(
-                (n_neurs, n_frames_tot))
-        self.neur.x = np.zeros(n_neurs)
-        self.neur.y = np.zeros(n_neurs)
-
-        self.neur.t_aln = np.linspace(
-            -1*t_pre, 2+t_post, n_frames_tot)
-
-        # iterate through neurons
-        # ----------------
-        for ind, neur in enumerate(neurs):
-            # extract x/y locations
-            self.neur.x[ind] = self.neur.stat[neur]['med'][0]
-            self.neur.y[ind] = self.neur.stat[neur]['med'][1]
-            # correct for image crop
-            self.neur.x[ind] -= self.ops.n_px_remove_sides
-            self.neur.y[ind] -= self.ops.n_px_remove_sides
-
-            # setup per-neuron dff_aln structure
-            # -------------
-            self.neur.dff_aln[ind] = {}
-            for _tr_cond in _tr_conds_all:
-                self.neur.dff_aln[ind][_tr_cond] = np.zeros((
-                    self.beh.tr_inds[_tr_cond].shape[0], n_frames_tot))
-
-            _tr_counts = {k: 0 for k in _tr_conds_all}
-
-            # precompute zscore for this neuron (avoids repeated full-array zscore)
-            if zscore is True:
-                _f_full = sp.stats.zscore(self.neur.f[neur, :])
-            else:
-                _f_full = self.neur.f[neur, :]
-
-            # extract fluorescence for each trial
-            # -------------
-            for trial in range(self.beh._stimrange.first,
-                               self.beh._stimrange.last):
-                print(f'\t\t\tneur={int(neur)} | {trial=}', end='\r')
-                _t_stim = self.beh.stim.t_start[trial]
-                _t_start = _t_stim - t_pre
-
-                _ind_t_start = np.argmin(np.abs(
-                    self.neur.t - _t_start))
-
-                _f = _f_full[_ind_t_start:_ind_t_start + n_frames_tot]
-                _dff = calc_dff(_f, baseline_frames=n_frames_pre)
-
-                for _cond in self._trial_cond_map.get(int(trial), []):
-                    if _cond in self.neur.dff_aln[ind]:
-                        self.neur.dff_aln[ind][_cond][
-                            _tr_counts[_cond], :] = _dff[0:n_frames_tot]
-                        _tr_counts[_cond] += 1
-
-            for _tr_cond in _tr_conds_all:
-                self.neur.dff_aln_mean[_tr_cond][ind, :] = \
-                    np.mean(self.neur.dff_aln[ind][_tr_cond], axis=0)
-
-        # process data for plotting
-        # ------------
-        _ind_stim_start = np.argmin(np.abs(self.neur.t_aln))
-        _ind_stim_end = np.argmin(np.abs(self.neur.t_aln - 2))
-        _ind_rew_end = np.argmin(np.abs(self.neur.t_aln - (2 + t_post)))
-
-        if sort_by == 'trial_type':
-            # sort by peak activation for the chosen trial type (stim window)
-            _sort_metric = np.max(
-                self.neur.dff_aln_mean[sort_tr_type][
-                    :, _ind_stim_start:_ind_stim_end],
-                axis=1)
-            sort_inds_corr = np.argsort(_sort_metric)
-
-        elif sort_by == 'selectivity':
-            # sort by absolute difference between highest and lowest outcome
-            _cond_max = _tr_conds_plot[-1]
-            _cond_min = _tr_conds_plot[0]
-            _sort_metric = np.abs(np.max(
-                self.neur.dff_aln_mean[_cond_max][
-                    :, _ind_stim_start:_ind_stim_end]
-                - self.neur.dff_aln_mean[_cond_min][
-                    :, _ind_stim_start:_ind_stim_end],
-                axis=1))
-            sort_inds_corr = np.argsort(_sort_metric)
-
-        elif sort_by == 'reward':
-            # sort by peak response in the post-reward window on highest-outcome trials
-            _cond_max = _tr_conds_plot[-1]
-            _sort_metric = np.max(
-                self.neur.dff_aln_mean[_cond_max][:, _ind_stim_end:_ind_rew_end],
-                axis=1)
-            sort_inds_corr = np.argsort(_sort_metric)
-
-        else:
-            raise ValueError(
-                "sort_by must be 'trial_type',"
-                + f"'selectivity', or 'reward'; got {sort_by!r}"
-            )
-
-        plt_vmin = np.min(
-            [self.neur.dff_aln_mean[k] for k in _tr_conds_plot])
-        plt_vmax = np.max(
-            [self.neur.dff_aln_mean[k] for k in _tr_conds_plot])
-
-        if plt_equal is True:
-            if abs(plt_vmin) < abs(plt_vmax):
-                plt_vmin = -1 * plt_vmax
-            elif abs(plt_vmin) > abs(plt_vmax):
-                plt_vmax = -1 * plt_vmin
-
-        # plot figure - one column per primary tr_cond
-        # -----------------
-        n_conds = len(_tr_conds_plot)
-        fig = plt.figure(figsize=figsize)
-        spec = gs.GridSpec(nrows=1, ncols=n_conds, figure=fig)
-        axes = [fig.add_subplot(spec[0, 0])]
-        for _i in range(1, n_conds):
-            axes.append(fig.add_subplot(spec[0, _i], sharey=axes[0]))
-
-        _ind_zero = np.argmin(np.abs(self.neur.t_aln))
-        _ind_rew = np.argmin(np.abs(self.neur.t_aln - 2))
-
-        _outcomes_plot = (list(self.beh.tr_conds_outcome)
-                          if hasattr(self.beh, 'tr_conds_outcome') else
-                          [None] * len(_tr_conds_plot))
-        for _ax, _tr_cond, _tr_cond_outcome in zip(
-                axes, _tr_conds_plot, _outcomes_plot):
-            _ax.pcolormesh(
-                self.neur.dff_aln_mean[_tr_cond][sort_inds_corr],
-                vmin=plt_vmin, vmax=plt_vmax,
-                cmap=cmap)
-            _ax.axvline(_ind_zero,
-                        color=sns.xkcd_rgb['dark grey'],
-                        linewidth=1,
-                        linestyle='dashed')
-            _ax.axvline(_ind_rew,
-                        color=sns.xkcd_rgb['bright blue'],
-                        linewidth=1,
-                        linestyle='dashed')
-            _ax.set_xticks(
-                ticks=[0, _ind_zero, self.neur.t_aln.shape[-1]],
-                labels=[f'{self.neur.t_aln[0]:.2f}', 0,
-                        f'{self.neur.t_aln[-1]:.2f}'])
-            _title = f'{self.beh._stimparser.parse_by}={_tr_cond}'
-            if _tr_cond_outcome is not None:
-                _title += f'\nOutcome: {_tr_cond_outcome}uL'
-            _ax.set_title(_title)
-        axes[0].set_ylabel('neuron')
-        axes[n_conds // 2].set_xlabel('time from stim (s)')
-
-        fig.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{t_pre=}_{t_post=}_{zscore=}_{plt_equal=}_'
-            + 'neur_trial_activity.pdf'))
-
-        plt.show()
-
-        # second figure: population-averaged trace per trial condition
-        # -------------------------------------------------------------
-        if hasattr(self.beh, 'tr_conds_outcome'):
-            _cmap = sns.cubehelix_palette(
-                as_cmap=True, start=2, rot=0, dark=0.1, light=0.6)
-            _max_outcome = np.max(self.beh.tr_conds_outcome)
-            _tr_colors = {
-                str(p): _cmap(self.beh.tr_conds_outcome[i] / _max_outcome)
-                for i, p in enumerate(self.beh._stimparser.parsed_param)}
-
-            fig_pop, ax_pop = plt.subplots(1, 1, figsize=(3.43, 2))
-
-            for _tr_cond, _tr_cond_outcome in zip(
-                    _tr_conds_plot, self.beh.tr_conds_outcome):
-                _color = _tr_colors[_tr_cond]
-                _mean_pop = np.mean(
-                    self.neur.dff_aln_mean[_tr_cond], axis=0)
-                _sem_pop = (np.std(
-                    self.neur.dff_aln_mean[_tr_cond], axis=0)
-                    / np.sqrt(n_neurs))
-                ax_pop.plot(
-                    self.neur.t_aln, _mean_pop,
-                    color=_color,
-                    label=f'{_tr_cond} ({_tr_cond_outcome}uL)')
-                ax_pop.fill_between(
-                    self.neur.t_aln,
-                    _mean_pop - _sem_pop,
-                    _mean_pop + _sem_pop,
-                    facecolor=_color,
-                    alpha=0.2)
-
-            ax_pop.axvline(x=0, color=sns.xkcd_rgb['dark grey'],
-                           linewidth=1.5, alpha=0.8, label='stim')
-            ax_pop.axvline(x=2, color=sns.xkcd_rgb['bright blue'],
-                           linewidth=1.5, alpha=0.8, label='reward')
-            ax_pop.legend(title=f'{self.beh._stimparser.parse_by} (outcome)')
-            ax_pop.set_xlabel('time from stim (s)')
-            ax_pop.set_ylabel('mean df/f')
-
-            fig_pop.savefig(os.path.join(
-                os.getcwd(), 'figs_mbl',
-                f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-                + f'{t_pre=}_{t_post=}_{zscore=}_'
-                + 'neur_popmean_activity.pdf'))
-
-            plt.show()
 
         return
 
@@ -3321,7 +3007,8 @@ class TwoPRec(object):
                     self.sector.decoding.final_weights[tr_cond].reshape(
                         self.sector.n_sectors, self.sector.n_sectors),
                     vmax=vmax_abs, vmin=-1*vmax_abs, cmap='coolwarm')
-                ax_weightmap[tr_cond].set_title(f'decoding weights: {tr_cond=}')
+                ax_weightmap[tr_cond].set_title(
+                    f'decoding weights: {tr_cond=}')
                 ax_weightmap[tr_cond].set_xticks([])
                 ax_weightmap[tr_cond].set_yticks([])
 
@@ -3371,7 +3058,7 @@ class TwoPRec(object):
                                                 '1': []}
             self.psychometrics.rew_resp_all = {'0': [],
                                                '0.5': [],
-                                               '1': []}            
+                                               '1': []}
 
             _ind_stim_start = np.argmin(np.abs(self.sector.t - 0))
             _ind_stim_end = np.argmin(np.abs(self.sector.t - 2))
@@ -3471,33 +3158,6 @@ class TwoPRec(object):
         except Exception as e:
             print('failed to generate psychometric curve')
             print(e)
-
-    def get_antic_licks_by_trialtype(self, bl_norm=False):
-        _tr_counts = {'0': 0, '0.5': 0, '1': 0}
-        lickrates_hz = {'0': 0, '0.5': 0, '1': 0}
-        for trial in range(self.beh._stimrange.first,
-                           self.beh._stimrange.last):
-            if bl_norm is True:
-                _antic_licks = self.beh.lick.antic_raw[trial] \
-                    - self.beh.lick.base[trial]
-            elif bl_norm is False:
-                _antic_licks = self.beh.lick.antic_raw[trial]
-
-            if self.beh.stim.prob[trial] == 0:
-                lickrates_hz['0'] += _antic_licks
-                _tr_counts['0'] += 1
-            if self.beh.stim.prob[trial] == 0.5:
-                lickrates_hz['0.5'] += _antic_licks
-                _tr_counts['0.5'] += 1
-            if self.beh.stim.prob[trial] == 1:
-                lickrates_hz['1'] += _antic_licks
-                _tr_counts['1'] += 1
-
-        lickrates_hz['0'] /= _tr_counts['0']
-        lickrates_hz['0.5'] /= _tr_counts['0.5']
-        lickrates_hz['1'] /= _tr_counts['1']
-
-        return lickrates_hz
 
     def _plt_rew_aligned_spatial_sectors(self, n_sectors,
                                          figsize=(3.43, 2),
@@ -3635,12 +3295,11 @@ class TwoPRec(object):
 
         self.dff_binned_time = np.empty(n_time_divs, dtype=np.ndarray)
         itis = np.diff(self.beh.rew.t)
-        _count, t_bin_edges = np.histogram(itis, bins=n_time_divs)
+        t_bin_edges, iti_masks = self._bin_trials_by_iti(
+            itis, n_time_divs)
 
         for ind_timediv in range(n_time_divs):
-            _trials_in_timediv = np.logical_and(
-                itis > t_bin_edges[ind_timediv],
-                itis < t_bin_edges[ind_timediv+1])
+            _trials_in_timediv = iti_masks[ind_timediv]
             _mean_dff_in_timediv = np.mean(
                 self.neur.dff_rewaligned[ind_sector][_trials_in_timediv, :],
                 axis=0)
@@ -3661,13 +3320,13 @@ class TwoPRec(object):
                    linewidth=0.8)
         ax.legend()
 
-        ax.set_xlabel('time from rew (s)')
-        ax.set_ylabel('df/f')
-
-        fig.savefig(f'{savefig_prefix}_dff_by_{n_time_divs}'
-                    + f'iti_sector{ind_sector}.pdf')
-
-        plt.show()
+        self._finish_plot(
+            fig, ax,
+            xlabel='time from rew (s)',
+            ylabel='df/f',
+            savepath=(f'{savefig_prefix}_dff_by_{n_time_divs}'
+                      + f'iti_sector{ind_sector}.pdf'),
+            show=True)
 
     def plt_dffs_including_iti(self, ind_sector=10, n_time_divs=5,
                                t_rew_pre=2,
@@ -3680,12 +3339,11 @@ class TwoPRec(object):
         self.dff_binned_time = np.empty(n_time_divs, dtype=np.ndarray)
         itis = np.diff(self.beh.rew.t)
 
-        _count, t_bin_edges = np.histogram(itis, bins=n_time_divs)
+        t_bin_edges, iti_masks = self._bin_trials_by_iti(
+            itis, n_time_divs)
 
         for ind_timediv in range(n_time_divs):
-            _trials_in_timediv = np.logical_and(
-                itis > t_bin_edges[ind_timediv],
-                itis < t_bin_edges[ind_timediv+1])
+            _trials_in_timediv = iti_masks[ind_timediv]
 
             t_rew_post = t_bin_edges[ind_timediv]
 
@@ -3706,7 +3364,8 @@ class TwoPRec(object):
             self.dff_binned_time[ind_timediv] = _mean_dff_in_timediv
 
         for ind_timediv in range(n_time_divs):
-            label=f'{t_bin_edges[ind_timediv]:.1f}-{t_bin_edges[ind_timediv+1]:.1f}'
+            label = (f'{t_bin_edges[ind_timediv]:.1f}-'
+                     f'{t_bin_edges[ind_timediv+1]:.1f}')
             ax.plot(self.neur.t,
                     self.dff_binned_time[ind_timediv],
                     color=palette[ind_timediv], linewidth=0.8,
@@ -3716,10 +3375,13 @@ class TwoPRec(object):
                    linewidth=0.8)
         ax.legend()
 
-        ax.set_xlabel('time from rew (s)')
-        ax.set_ylabel('df/f')
-
-        fig.savefig(f'{savefig_prefix}_dff_by_{n_time_divs}iti_sector{ind_sector}.pdf')
+        self._finish_plot(
+            fig, ax,
+            xlabel='time from rew (s)',
+            ylabel='df/f',
+            savepath=(f'{savefig_prefix}_dff_by_{n_time_divs}'
+                      f'iti_sector{ind_sector}.pdf'),
+            show=False)
 
         return
 
@@ -3739,12 +3401,12 @@ class TwoPRec(object):
                    linestyle='dashed',
                    linewidth=0.8)
 
-        ax.set_xlabel('time from rew (s)')
-        ax.set_ylabel('df/f')
-
-        fig.savefig(f'{savefig_prefix=}_dff_{sector=}.pdf')
-
-        plt.show()
+        self._finish_plot(
+            fig, ax,
+            xlabel='time from rew (s)',
+            ylabel='df/f',
+            savepath=f'{savefig_prefix=}_dff_{sector=}.pdf',
+            show=True)
 
     def plt_dffs_all(self,
                      sns_palette='mako',
@@ -3762,12 +3424,12 @@ class TwoPRec(object):
                    linestyle='dashed',
                    linewidth=0.8)
 
-        ax.set_xlabel('time from rew (s)')
-        ax.set_ylabel('df/f')
-
-        fig.savefig(f'{savefig_prefix}_dff_all.pdf')
-
-        plt.show()
+        self._finish_plot(
+            fig, ax,
+            xlabel='time from rew (s)',
+            ylabel='df/f',
+            savepath=f'{savefig_prefix}_dff_all.pdf',
+            show=True)
 
     def plt_total_resp(self, figsize=(3.43, 3.43),
                        savefig_prefix='grab'):
@@ -3794,24 +3456,23 @@ class TwoPRec(object):
 
         ax.plot(np.arange(n_rews), self.resp_5ht,
                 color=sns.xkcd_rgb['ocean green'], linewidth=0.8)
-        ax.set_xlabel('reward number')
-        ax.set_ylabel('integral df/f')
-
-        fig.savefig(f'{savefig_prefix}_total_response.pdf')
-
-        plt.show()
+        self._finish_plot(
+            fig, ax,
+            xlabel='reward number',
+            ylabel='integral df/f',
+            savepath=f'{savefig_prefix}_total_response.pdf',
+            show=True)
 
         return
 
     def plt_lick_resp(self, t_pre=3, t_post=3,
                       figsize=(3.43, 3.43),
-                      savefig_prefix='grab'):
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int(t_post * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
+                      savefig_prefix='grab',
+                      channel=None):
+        rec = self._get_rec(channel)
 
-        t_lickaligned = np.linspace(
-            -1*t_pre, t_post, n_frames_tot)
+        n_frames_pre, n_frames_post, n_frames_tot, t_lickaligned = \
+            self._aligned_frame_params(t_pre, t_post, t_event=0)
 
         dff_lick = np.zeros(n_frames_tot)
         count_dffs = 0
@@ -3822,8 +3483,8 @@ class TwoPRec(object):
                 ind_lick = np.argmin(np.abs(
                     self.rec_t - lick))
                 f = np.mean(np.mean(
-                    self.rec[ind_lick-n_frames_pre:
-                             ind_lick+n_frames_post, :, :],
+                    rec[ind_lick-n_frames_pre:
+                        ind_lick+n_frames_post, :, :],
                     axis=1), axis=1)
                 dff = calc_dff(f, n_frames_pre)
                 dff_lick += dff
@@ -3835,14 +3496,18 @@ class TwoPRec(object):
         ax = fig.add_subplot(1, 1, 1)
         ax.plot(t_lickaligned, dff_lick,
                 color=sns.xkcd_rgb['grey'], linewidth=0.8)
-        ax.set_xlabel('time from lick (s)')
-        ax.set_ylabel('dff')
         ax.axvline(x=0, color=sns.xkcd_rgb['black'],
                    linestyle='dashed',
                    linewidth=0.8)
 
-        fig.savefig(f'{savefig_prefix}_lick_resp_{t_pre=}_{t_post=}.pdf')
-        plt.show()
+        _ch_str = f'_{channel}' if channel else ''
+        self._finish_plot(
+            fig, ax,
+            xlabel='time from lick (s)',
+            ylabel='dff',
+            savepath=(f'{savefig_prefix}{_ch_str}'
+                      f'_lick_resp_{t_pre=}_{t_post=}.pdf'),
+            show=True)
 
     def plt_neur_masks(self, show=True):
         """Plot an image of all neuron masks from suite2p output."""
@@ -3919,63 +3584,50 @@ class TwoPRec_DualColour(TwoPRec):
         - Red channel (typically Ch1) -> self.rec_red
         - Green channel (typically Ch2) -> self.rec_grn
         """
-
-        # setup names of folders, files, and ops
-        # --------------
-        self._init_folders(enclosing_folder, folder_beh, folder_img,
-                           dset_obj, dset_ind)
         self.ch_img_red = ch_img_red
         self.ch_img_grn = ch_img_grn
-        # Keep ch_img for backwards compatibility (defaults to green)
-        self.ch_img = ch_img_grn
-        self._init_ops(n_px_remove_sides, rec_type)
+        self._fname_img_red = fname_img_red
+        self._fname_img_grn = fname_img_grn
+        self._trial_cond_use_int_cast = False
 
+        super().__init__(enclosing_folder=enclosing_folder,
+                         folder_beh=folder_beh,
+                         folder_img=folder_img,
+                         fname_img=fname_img_grn,
+                         dset_obj=dset_obj,
+                         dset_ind=dset_ind,
+                         ch_img=ch_img_grn,
+                         trial_end=trial_end,
+                         rec_type=rec_type,
+                         parse_stims=False,
+                         parse_by='stimulusOrientation',
+                         n_px_remove_sides=n_px_remove_sides)
+        return
+
+    def _init_recording(self, fname_img=None, dset_obj=None,
+                        n_px_remove_sides=10, **kwargs):
+        """Load imaging data for a dual-colour recording."""
         # get filenames of images for both channels
         list_img = os.listdir(self.folder.img)
+        fname_img_red = getattr(self, '_fname_img_red', None)
+        fname_img_grn = (fname_img if fname_img is not None
+                         else getattr(self, '_fname_img_grn', None))
 
         # Red channel
-        if fname_img_red is not None:
-            self.fname_img_red = fname_img_red
-        elif dset_obj is not None:
-            # When loading from a dataset, always expect the standard names
-            self.fname_img_red = f'compiled_Ch{ch_img_red}.tif'
-        else:
-            for _fname in list_img:
-                if f'Ch{ch_img_red}.tif' in _fname and 'compiled' in _fname:
-                    self.fname_img_red = _fname
-                    break
+        self.fname_img_red = self._resolve_channel_filename(
+            list_img, self.ch_img_red, fname_img=fname_img_red,
+            dset_obj=dset_obj, use_dataset_default=True)
 
         # Green channel
-        if fname_img_grn is not None:
-            self.fname_img_grn = fname_img_grn
-        elif dset_obj is not None:
-            self.fname_img_grn = f'compiled_Ch{ch_img_grn}.tif'
-        else:
-            for _fname in list_img:
-                if f'Ch{ch_img_grn}.tif' in _fname and 'compiled' in _fname:
-                    self.fname_img_grn = _fname
-                    break
+        self.fname_img_grn = self._resolve_channel_filename(
+            list_img, self.ch_img_grn, fname_img=fname_img_grn,
+            dset_obj=dset_obj, use_dataset_default=True)
 
         # Keep fname_img for backwards compatibility (defaults to green)
         self.fname_img = self.fname_img_grn
 
-        # load behavioral data (DualColour always uses parse_stims=False)
-        # -------------
-        self._init_behavior(parse_stims=False)
-
-        # load imaging data - BOTH CHANNELS
-        # ------------
         print('loading imaging...')
-        for _file in os.listdir(self.folder.img):
-            if _file.endswith('BACKUP.xml'):
-                try:
-                    xmlobj = XMLParser(os.path.join(self.folder.img, _file))
-                    sampling_rate = xmlobj.get_framerate()
-                    print(f'\tframerate is {sampling_rate:.2f}Hz')
-                except:
-                    print('could not parse framerate from BACKUP.xml')
-                    pass
-        self.samp_rate = sampling_rate
+        self.samp_rate = self._load_sampling_rate_from_backup_xml()
 
         # Load RED channel (keep raw memmap, crop lazily via _get_rec)
         # Storing the raw memmap avoids creating a non-contiguous view that
@@ -3995,115 +3647,18 @@ class TwoPRec_DualColour(TwoPRec):
         # Create cropped views for backward compatibility (used for .shape etc)
         # These are views, not copies, until data is actually accessed
         c = n_px_remove_sides
-        self.rec_red = self._rec_red_raw[:, c:-c, c:-c] if c > 0 else self._rec_red_raw
-        self.rec_grn = self._rec_grn_raw[:, c:-c, c:-c] if c > 0 else self._rec_grn_raw
+        self.rec_red = self._rec_red_raw[:, c:-c, c:-c] \
+            if c > 0 else self._rec_red_raw
+        self.rec_grn = self._rec_grn_raw[:, c:-c, c:-c] \
+            if c > 0 else self._rec_grn_raw
 
         # Keep self.rec for backwards compatibility (defaults to green)
         self.rec = self.rec_grn
 
-        # try to load suite2p output if available
-        self._init_suite2p()
-
-        # align behavior and imaging data
-        # ----------------------
-        self._init_timestamps(self.rec_grn.shape[0], rec_type)
-
-        # note the first and last stimulus/rew within recording bounds
-        # ---------------
-        self.trial_end = trial_end
-        self._init_stim_rew_range(trial_end=trial_end)
-
-        # compute trial indices for each trtype
-        # -------------------
-        self.beh.tr_inds = {}
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
-            self.beh.tr_conds = ['0', '0.5', '1', '0.5_rew', '0.5_norew']
-
-            self.beh.tr_inds['0'] = np.where(self.beh.stim.prob == 0)[0]
-            self.beh.tr_inds['0.5'] = np.where(self.beh.stim.prob == 0.5)[0]
-            self.beh.tr_inds['1'] = np.where(self.beh.stim.prob == 1)[0]
-            self.beh.tr_inds['0.5_rew'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.rew.delivered == True))[0]
-            self.beh.tr_inds['0.5_norew'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.rew.delivered == False))[0]
-
-            # remove trinds outside of correct range
-            for tr_cond in ['0', '0.5', '1', '0.5_rew', '0.5_norew']:
-                self.beh.tr_inds[tr_cond] = np.delete(
-                    self.beh.tr_inds[tr_cond],
-                    ~np.isin(self.beh.tr_inds[tr_cond],
-                             np.arange(
-                                 self.beh._stimrange.first,
-                                 self.beh._stimrange.last+1)))
-            # add lickrates
-            # ----------------
-            self.add_lickrates()
-
-            self.beh.tr_inds['0.5_prelick'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw > 0))[0]
-            self.beh.tr_inds['0.5_noprelick'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw == 0))[0]
-            for tr_cond in ['0.5_prelick', '0.5_noprelick']:
-                self.beh.tr_inds[tr_cond] = np.delete(
-                    self.beh.tr_inds[tr_cond],
-                    ~np.isin(self.beh.tr_inds[tr_cond],
-                             np.arange(
-                                 self.beh._stimrange.first,
-                                 self.beh._stimrange.last+1)))
-        else:
-            self.beh.tr_conds = self.beh._stimparser.parsed_param.astype(str)
-            self.beh.tr_conds_outcome = (self.beh._stimparser.prob
-                                         * self.beh._stimparser.size)
-
-            for param_val in self.beh._stimparser.parsed_param:
-                self.beh.tr_inds[str(param_val)] = np.where(
-                    self.beh._stimparser._all_parsed_param == param_val)[0]
-
-            # remove trinds outside of correct range
-            for tr_cond in [str(p) for p in self.beh._stimparser.parsed_param]:
-                self.beh.tr_inds[tr_cond] = np.delete(
-                    self.beh.tr_inds[tr_cond],
-                    ~np.isin(self.beh.tr_inds[tr_cond],
-                             np.arange(
-                                 self.beh._stimrange.first,
-                                 self.beh._stimrange.last+1)))
-            # add lickrates
-            # ----------------
-            self.add_lickrates()
-
-        # build _trial_cond_map: maps each trial index -> list of condition keys
-        self._trial_cond_map = {}
-        for _cond, _inds in self.beh.tr_inds.items():
-            for _idx in _inds:
-                self._trial_cond_map.setdefault(int(_idx), []).append(_cond)
-        return
-
-    def _get_rec(self, channel='grn'):
-        """
-        Helper method to get the appropriate recording based on channel.
-
-        Returns the cropped view for backward compatibility.
-
-        Parameters
-        ----------
-        channel : str
-            'red' or 'grn' (default: 'grn')
-
-        Returns
-        -------
-        np.ndarray
-            The recording array for the specified channel (cropped view)
-        """
-        if channel == 'red':
-            return self.rec_red
-        elif channel == 'grn':
-            return self.rec_grn
-        else:
-            raise ValueError(f"channel must be 'red' or 'grn', got '{channel}'")
-
     def _get_rec_raw(self, channel='grn'):
         """
-        Helper method to get the raw (uncropped) memmap for efficient batch I/O.
+        Helper method to get the raw (uncropped) memmap
+        for efficient batch I/O.
 
         Use this for methods that read large batches to avoid non-contiguous
         memory access patterns. Apply cropping after reading each batch.
@@ -4127,366 +3682,15 @@ class TwoPRec_DualColour(TwoPRec):
                 return self._rec_grn_original_raw, self._crop_px
             return self._rec_grn_raw, self._crop_px
         else:
-            raise ValueError(f"channel must be 'red' or 'grn', got '{channel}'")
+            raise ValueError(
+                f"channel must be 'red' or 'grn', got '{channel}'")
 
-    def _get_rec_t(self, channel='grn'):
-        """
-        Helper method to get the appropriate timestamps based on channel.
-
-        If correct_signal() was called with replace_grn=True and time slicing,
-        the green channel may have different timestamps than the full recording.
-
-        Parameters
-        ----------
-        channel : str
-            'red' or 'grn' (default: 'grn')
-
-        Returns
-        -------
-        np.ndarray
-            The timestamp array for the specified channel
-        """
-        if channel == 'red':
-            return self.rec_t
-        elif channel == 'grn':
-            # Use channel-specific timestamps if available (from correct_signal)
-            if hasattr(self, 'rec_t_grn'):
-                return self.rec_t_grn
-            return self.rec_t
-        else:
-            raise ValueError(f"channel must be 'red' or 'grn', got '{channel}'")
-
-    # add_frame and plt_frame are inherited from TwoPRec which now supports
-    # channel, use_zscore, _get_rec/_get_rec_t, and _trial_cond_map.
-
-    # add_frame, plt_frame, add_sectors, and plt_sectors are inherited from
-    # TwoPRec which now supports channel, use_zscore, _get_rec/_get_rec_t,
+    # --------------
+    # add_frame, plt_frame, add_sectors, plt_sectors, add_null_dists,
+    # add_zetatest_sectors, plt_null_dist, and plt_lick_resp are inherited
+    # from TwoPRec which now supports channel, use_zscore, _get_rec/_get_rec_t,
     # and _trial_cond_map.
-
-    def add_null_dists(self, n_null=100, auto_run_methods=True,
-                       t_pre=2, t_post=5, channel='grn'):
-        """
-        Makes a 'null' distribution based on the alternate hypothesis
-        of no spatial variability in task-related signaling.
-
-        Parameters
-        ----------
-        n_null : int
-            Number of null simulations
-        auto_run_methods : bool
-            Whether to auto-run add_frame and add_sectors if needed
-        t_pre : float
-            Time before stimulus (seconds)
-        t_post : float
-            Time after reward (seconds)
-        channel : str
-            'red' or 'grn' - which channel to analyze (default: 'grn')
-        """
-        print(f'creating null distributions ({channel})')
-
-        # check that sector and frame exist
-        print('\trunning checks')
-
-        if not hasattr(self, 'frame'):
-            if auto_run_methods is False:
-                print('Must have run self.add_frame() first!')
-                return
-            elif auto_run_methods is True:
-                self.add_frame(t_pre=t_pre,
-                               t_post=t_post,
-                               channel=channel)
-
-        if not hasattr(self, 'sector'):
-            if auto_run_methods is False:
-                print('Must have run self.add_sectors() first!')
-                return
-            elif auto_run_methods is True:
-                # compute_null=False avoids infinite recursion
-                self.add_sectors(t_pre=t_pre,
-                                 t_post=t_post,
-                                 channel=channel,
-                                 compute_null=False)
-
-        # construct the null distribution
-        # Memory-optimized: store only parameters and ONE example trace per
-        # sector (for plotting). Full null distributions are generated
-        # on-the-fly when needed (e.g., in add_psychometrics).
-        self.sector_null = SimpleNamespace()
-        self.sector_null.t = self.sector.t
-        self.sector_null.n_null = n_null
-
-        # Store ONE example null trace per sector/condition (for plt_null_dist)
-        self.sector_null.dff = np.empty(
-            (self.sector.n_sectors, self.sector.n_sectors), dtype=dict)
-
-        # Store parameters for on-the-fly generation
-        self.sector_null.params = np.empty(
-            (self.sector.n_sectors, self.sector.n_sectors), dtype=dict)
-
-        _ind_bl_start = 0
-        _ind_bl_end = np.argmin(np.abs(self.sector.t - 0))
-        ampli_frame = np.max(np.mean(self.frame.dff['1'], axis=0))
-        self.sector_null.ampli_frame = ampli_frame
-
-        print('\tcomputing null parameters for each sector')
-        _n_trace = 0
-        for n_x in range(self.sector.n_sectors):
-            for n_y in range(self.sector.n_sectors):
-                if (_n_trace + 1) % 10 == 0:
-                    print(f'\t\tsector {_n_trace+1}/'
-                          f'{self.sector.n_sectors**2}...',
-                          end='\r')
-
-                # Compute scaling variables (stored for on-the-fly generation)
-                _ampli_sector = np.max(np.mean(
-                    self.sector.dff[n_x, n_y]['1'], axis=0))
-                _ampli_scaling = _ampli_sector / ampli_frame
-
-                _bl_data = self.sector.dff[n_x, n_y]['1'][
-                    :, _ind_bl_start:_ind_bl_end]
-                _bl_std = np.mean(np.std(_bl_data, axis=1))
-
-                self.sector_null.params[n_x, n_y] = {
-                    'ampli_scaling': _ampli_scaling,
-                    'bl_std': _bl_std
-                }
-
-                # Generate ONE example null trace per condition (for plotting)
-                self.sector_null.dff[n_x, n_y] = {}
-                for tr_cond in ['0', '0.5', '1', '0.5_rew', '0.5_norew']:
-                    _frame_data = self.frame.dff[tr_cond]  # (n_trials, n_frames)
-                    n_trials, n_frames = _frame_data.shape
-                    # Generate just ONE example (shape: 1, n_trials, n_frames)
-                    _noise = np.random.normal(
-                        scale=_bl_std, size=(1, n_trials, n_frames))
-                    self.sector_null.dff[n_x, n_y][tr_cond] = \
-                        (_frame_data * _ampli_scaling) + _noise
-
-                _n_trace += 1
-
-        print(f'\t\tsector {self.sector.n_sectors**2}/'
-              f'{self.sector.n_sectors**2}...done')
-        return
-
-    def add_zetatest_sectors(self, frametime_post=2,
-                             zeta_type='2samp', channel='grn'):
-        """
-        Runs ZETA test on sectors to identify task-responsive regions.
-
-        Parameters
-        ----------
-        frametime_post : float
-            Time after stimulus to include in analysis
-        zeta_type : str
-            '2samp' or '1samp'
-        channel : str
-            'red' or 'grn' - which channel to analyze (default: 'grn')
-        """
-        if not hasattr(self, 'sector'):
-            self.add_sectors(channel=channel)
-
-        print(f'adding zetatest for sectors ({channel})...')
-        rec = self._get_rec(channel)
-
-        # setup structure and calculate on/off times
-        n_sectors = self.sector.n_sectors**2
-
-        framerate = 1 / (self.neur.t[1] - self.neur.t[0])
-        frames_post = np.ceil(frametime_post * framerate)
-
-        t_on_0 = self.beh.stim.t_start[self.beh.tr_inds['0']]
-        t_onoff_0 = np.tile(t_on_0, (2, 1)).T
-        t_onoff_0[:, 1] += 2
-
-        t_on_1 = self.beh.stim.t_start[self.beh.tr_inds['1']]
-        t_onoff_1 = np.tile(t_on_1, (2, 1)).T
-        t_onoff_1[:, 1] += 2
-
-        self.sector.zeta_pval = np.zeros(n_sectors)
-        self.sector.mean_pval = np.zeros(n_sectors)
-        _n_sec = 0
-        for n_x in range(self.sector.n_sectors):
-            for n_y in range(self.sector.n_sectors):
-                print(f'\t\tsector {_n_sec}/{n_sectors}...      ',
-                      end='\r')
-
-                _t = self.rec_t
-                _f = np.mean(np.mean(
-                    rec[:,
-                             self.sector.x.lower[n_x, n_y]:
-                             self.sector.x.upper[n_x, n_y],
-                             self.sector.y.lower[n_x, n_y]:
-                             self.sector.y.upper[n_x, n_y]],
-                    axis=1), axis=1)
-
-                if zeta_type == '2samp':
-                    _zeta = zetapy.zetatstest2(_t, _f, t_onoff_0,
-                                               _t, _f, t_onoff_1,
-                                               dblUseMaxDur=frames_post)
-                elif zeta_type == '1samp':
-                    _zeta = zetapy.zetatstest(_t, _f, t_onoff_1,
-                                              dblUseMaxDur=frames_post)
-
-                self.sector.zeta_pval[_n_sec] = _zeta[1]['dblZetaP']
-                self.sector.mean_pval[_n_sec] = _zeta[1]['dblMeanP']
-                _n_sec += 1
-        print('')
-
-        return
-
-    def plt_null_dist(self,
-                      figsize=(6, 3),
-                      img_ds_factor=50,
-                      img_alpha=0.5,
-                      channel='grn',
-                      plt_dff={'x': {'gain': 0.6,
-                                     'offset': 0.2},
-                               'y': {'gain': 10,
-                                     'offset': 0.2}}):
-        """
-        Plots null distribution comparison.
-
-        Parameters
-        ----------
-        figsize : tuple
-            Figure size
-        img_ds_factor : int
-            Downsampling factor for image
-        img_alpha : float
-            Alpha for image overlay
-        channel : str
-            'red' or 'grn' - which channel to use (default: 'grn')
-        plt_dff : dict
-            Plotting parameters
-        """
-        rec = self._get_rec(channel)
-
-        fig = plt.figure(figsize=figsize)
-        spec = gs.GridSpec(nrows=1, ncols=2,
-                           figure=fig)
-
-        ax_dff = fig.add_subplot(spec[0, 0])
-        ax_dff.set_title(f'dff ({channel})')
-        ax_dff_null = fig.add_subplot(spec[0, 1])
-        ax_dff_null.set_title(f'dff null ({channel})')
-
-        n_sectors = self.sector.n_sectors
-
-        print('\tcreating max projection image...')
-        _rec_max = np.max(rec[::img_ds_factor, :, :], axis=0)
-        _rec_max[:, ::int(_rec_max.shape[0]/n_sectors)] = 0
-        _rec_max[::int(_rec_max.shape[0]/n_sectors), :] = 0
-
-        ax_dff.imshow(_rec_max,
-                      extent=[0, n_sectors,
-                              n_sectors, 0],
-                      alpha=img_alpha)
-        ax_dff_null.imshow(_rec_max,
-                           extent=[0, n_sectors,
-                                   n_sectors, 0],
-                           alpha=img_alpha)
-
-        for n_x in range(n_sectors):
-            for n_y in range(n_sectors):
-                # **************************
-                # plotting for this sector
-                # **************************
-
-                # make sector plot of stim-aligned traces
-                # ----------
-                _t_sector = ((self.sector.t / self.sector.t[-1])
-                             * plt_dff['x']['gain'])
-                _t_sector = _t_sector + n_x + plt_dff['x']['offset']
-
-                for stim_cond in ['0', '0.5', '1']:
-                    _dff_mean = np.mean(self.sector.dff[n_x, n_y][stim_cond],
-                                        axis=0)
-                    _dff_shifted = (-1 * _dff_mean * plt_dff['y']['gain']) \
-                        + n_y - plt_dff['y']['offset'] + 1
-                    ax_dff.plot(
-                        _t_sector, _dff_shifted,
-                        color=self.sector.colors[stim_cond],
-                        linestyle=self.sector.linestyle[stim_cond])
-
-                    _dff_null_mean = np.mean(
-                        self.sector_null.dff[n_x, n_y][stim_cond][0, :, :],
-                        axis=0)
-                    _dff_null_shifted = (-1 * _dff_null_mean
-                                         * plt_dff['y']['gain']) \
-                                         + n_y - plt_dff['y']['offset'] + 1
-                    ax_dff_null.plot(
-                        _t_sector, _dff_null_shifted,
-                        color=self.sector.colors[stim_cond],
-                        linestyle=self.sector.linestyle[stim_cond])
-
-        fig.savefig(os.path.join(
-            os.getcwd(), 'figs_mbl',
-            f'{self.path.animal}_{self.path.date}_{self.path.beh_folder}_'
-            + f'{channel=}_null_dists.pdf'))
-
-        plt.show()
-
-        return
-
-    def plt_lick_resp(self, t_pre=3, t_post=3,
-                      figsize=(3.43, 3.43),
-                      savefig_prefix='grab',
-                      channel='grn'):
-        """
-        Plots lick-aligned response.
-
-        Parameters
-        ----------
-        t_pre : float
-            Time before lick (seconds)
-        t_post : float
-            Time after lick (seconds)
-        figsize : tuple
-            Figure size
-        savefig_prefix : str
-            Prefix for saved figure
-        channel : str
-            'red' or 'grn' - which channel to use (default: 'grn')
-        """
-        rec = self._get_rec(channel)
-
-        n_frames_pre = int(t_pre * self.samp_rate)
-        n_frames_post = int(t_post * self.samp_rate)
-        n_frames_tot = n_frames_pre + n_frames_post
-
-        t_lickaligned = np.linspace(
-            -1*t_pre, t_post, n_frames_tot)
-
-        dff_lick = np.zeros(n_frames_tot)
-        count_dffs = 0
-        for lick in self.beh.t_licks:
-            _closest_rew = np.min(np.abs(
-                self.beh.rew.t - lick))
-            if _closest_rew > np.max([t_pre, t_post]):
-                ind_lick = np.argmin(np.abs(
-                    self.rec_t - lick))
-                f = np.mean(np.mean(
-                    rec[ind_lick-n_frames_pre:
-                             ind_lick+n_frames_post, :, :],
-                    axis=1), axis=1)
-                dff = calc_dff(f, n_frames_pre)
-                dff_lick += dff
-                count_dffs += 1
-
-        dff_lick /= count_dffs
-
-        fig = plt.figure(figsize=figsize)
-        ax = fig.add_subplot(1, 1, 1)
-        ax.plot(t_lickaligned, dff_lick,
-                color=sns.xkcd_rgb['grey'], linewidth=0.8)
-        ax.set_xlabel('time from lick (s)')
-        ax.set_ylabel('dff')
-        ax.axvline(x=0, color=sns.xkcd_rgb['black'],
-                   linestyle='dashed',
-                   linewidth=0.8)
-
-        fig.savefig(f'{savefig_prefix}_{channel}_lick_resp_{t_pre=}_{t_post=}.pdf')
-        plt.show()
+    # ---------------
 
     def correct_signal(self, method='linear', save_to_disk=False,
                        t_start=None, t_end=None, t_end_pad=10.0,
@@ -4597,10 +3801,12 @@ class TwoPRec_DualColour(TwoPRec):
         >>> corrected = rec.correct_signal(method='linear')
 
         >>> # Robust correction for data with outliers
-        >>> corrected = rec.correct_signal(method='robust', huber_epsilon=1.5)
+        >>> corrected = rec.correct_signal(
+        ...     method='robust', huber_epsilon=1.5)
 
         >>> # Adaptive filter correction
-        >>> corrected = rec.correct_signal(method='lms', filter_order=20, mu=0.005)
+        >>> corrected = rec.correct_signal(
+        ...     method='lms', filter_order=20, mu=0.005)
 
         >>> # PCA-based correction with memory optimization
         >>> corrected = rec.correct_signal(method='pca', spatial_subsample=8)
@@ -4669,7 +3875,8 @@ class TwoPRec_DualColour(TwoPRec):
 
         # Linearly detrend both channels before correction if requested.
         # This removes slow baseline drift so the correction method focuses
-        # on shared noise (motion, haemodynamics) rather than trend differences.
+        # on shared noise (motion, haemodynamics)
+        # rather than trend differences.
         # Detrended arrays are written to disk as raw numpy memmaps to avoid
         # holding 2 × T × X × Y × 4 bytes in RAM.
         _detrend_tmp_files = []
