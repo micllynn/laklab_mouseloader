@@ -24,36 +24,12 @@ from .utils import find_event_onsets_autothresh, \
     remove_lick_artefact_after_rew, check_folder_exists
 from .utils_twop import XMLParser, calc_dff
 from .beh import BehDataSimpleLoad, StimParserNew
+from .exp_defs import ExpSubtypes
 from . import signal_correction
 
 # Suppress NumPy RuntimeWarnings in this module.
 warnings.filterwarnings(
     "ignore", category=RuntimeWarning, module=r"^numpy(\.|$)")
-
-# ---------------------------------------------------------------------------
-# Predefined subtypes for known beh_type presets
-# ---------------------------------------------------------------------------
-
-_VISUAL_PAVLOV_SUBTYPES = {
-    '0':             {'parent': None,
-                      'filters': {'rewardProbabilityValues': 0.0}},
-    '0.5':           {'parent': None,
-                      'filters': {'rewardProbabilityValues': 0.5}},
-    '1':             {'parent': None,
-                      'filters': {'rewardProbabilityValues': 1.0}},
-    '0.5_rew':       {'parent': None,
-                      'filters': {'rewardProbabilityValues': 0.5,
-                                  'isRewardGivenValues': 1}},
-    '0.5_norew':     {'parent': None,
-                      'filters': {'rewardProbabilityValues': 0.5,
-                                  'isRewardGivenValues': 0}},
-    '0.5_prelick':   {'parent': None,
-                      'filters': {'rewardProbabilityValues': 0.5,
-                                  'anticipatoryLickValues': lambda x: x > 0}},
-    '0.5_noprelick': {'parent': None,
-                      'filters': {'rewardProbabilityValues': 0.5,
-                                  'anticipatoryLickValues': lambda x: x == 0}},
-}
 
 
 class TwoPRec(object):
@@ -117,8 +93,9 @@ class TwoPRec(object):
         beh_type : str or None
             Preset that drives parse_by and subtypes automatically.
             'visual_pavlov' (default): parse_by='stimulusOrientation',
-                subtypes = _VISUAL_PAVLOV_SUBTYPES (conditions '0', '0.5', '1',
-                '0.5_rew', '0.5_norew', '0.5_prelick', '0.5_noprelick').
+                subtypes = ExpSubtypes('visual_pavlov').get() (conditions
+                '0', '0.5', '1', '0.5_rew', '0.5_norew',
+                '0.5_prelick', '0.5_noprelick').
             'auditory_pavlov': parse_by='stimulusType', no subtypes.
             None: parse_by and subtypes must be provided explicitly.
         parse_by : str or None
@@ -164,10 +141,12 @@ class TwoPRec(object):
             if parse_by is None:
                 parse_by = 'stimulusOrientation'
             if subtypes is None:
-                subtypes = _VISUAL_PAVLOV_SUBTYPES
+                subtypes = ExpSubtypes(beh_type).get()
         elif beh_type == 'auditory_pavlov':
             if parse_by is None:
                 parse_by = 'stimulusType'
+            if subtypes is None:
+                subtypes = ExpSubtypes(beh_type).get()
         elif beh_type is None:
             if parse_by is None:
                 raise ValueError(
@@ -478,7 +457,7 @@ class TwoPRec(object):
         """Initialize trial conditions, trial indices, and _trial_cond_map.
 
         For beh_type='visual_pavlov', all conditions are provided by the
-        StimParserNew subtypes (_VISUAL_PAVLOV_SUBTYPES); the parsed_param
+        StimParserNew subtypes (ExpSubtypes('visual_pavlov').get()); the parsed_param
         (orientation) loop is skipped and tr_conds is the ordered subtype keys.
 
         For all other beh_types, the generic path builds tr_inds from
