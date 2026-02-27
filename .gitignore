@@ -25,3 +25,6 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
+
+# Project instructions
+CLAUDE.md
