@@ -13,14 +13,14 @@ EXP_DICTS = {
         folder_beh='1',
         folder_img='TwoP/2025-01-10_t-001',
         fname_img='2025-01-10_t-001_Cycle00001_Ch2.tif',
-        parse_by='stimulusOrientation',
+        beh_type='visual_pavlov',
     ),
     'MBL002_2025-02-05': dict(
         enclosing_folder='/path/to/MBL002/2025-02-05/',
         folder_beh='2',
         folder_img='TwoP/2025-02-05_t-001',
         fname_img='2025-02-05_t-001_Cycle00001_Ch2.tif',
-        parse_by='stimulusContrast',
+        beh_type='auditory_pavlov',
     ),
 }
 
@@ -94,8 +94,8 @@ def batch_run(exp_dicts, steps=None, rec_class=TwoPRec, **rec_kwargs):
     exp_dicts : dict
         Mapping of ``{exp_id: params_dict}`` where each ``params_dict`` may
         contain any subset of:
-            enclosing_folder, folder_beh, folder_img, fname_img, parse_by,
-            trial_end, rec_type, n_px_remove_sides
+            enclosing_folder, folder_beh, folder_img, fname_img, beh_type,
+            parse_by, subtypes, trial_end, rec_type, n_px_remove_sides
         and any other keyword accepted by ``rec_class.__init__``.
         Per-experiment values override the shared ``**rec_kwargs``.
     steps : list or None

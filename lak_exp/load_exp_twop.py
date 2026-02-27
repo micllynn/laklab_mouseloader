@@ -23,12 +23,37 @@ from .align_imgbeh import Aligner_ImgBeh
 from .utils import find_event_onsets_autothresh, \
     remove_lick_artefact_after_rew, check_folder_exists
 from .utils_twop import XMLParser, calc_dff
-from .beh import BehDataSimpleLoad, StimParser, StimParserNew
+from .beh import BehDataSimpleLoad, StimParserNew
 from . import signal_correction
 
 # Suppress NumPy RuntimeWarnings in this module.
 warnings.filterwarnings(
     "ignore", category=RuntimeWarning, module=r"^numpy(\.|$)")
+
+# ---------------------------------------------------------------------------
+# Predefined subtypes for known beh_type presets
+# ---------------------------------------------------------------------------
+
+_VISUAL_PAVLOV_SUBTYPES = {
+    '0':             {'parent': None,
+                      'filters': {'rewardProbabilityValues': 0.0}},
+    '0.5':           {'parent': None,
+                      'filters': {'rewardProbabilityValues': 0.5}},
+    '1':             {'parent': None,
+                      'filters': {'rewardProbabilityValues': 1.0}},
+    '0.5_rew':       {'parent': None,
+                      'filters': {'rewardProbabilityValues': 0.5,
+                                  'isRewardGivenValues': 1}},
+    '0.5_norew':     {'parent': None,
+                      'filters': {'rewardProbabilityValues': 0.5,
+                                  'isRewardGivenValues': 0}},
+    '0.5_prelick':   {'parent': None,
+                      'filters': {'rewardProbabilityValues': 0.5,
+                                  'anticipatoryLickValues': lambda x: x > 0}},
+    '0.5_noprelick': {'parent': None,
+                      'filters': {'rewardProbabilityValues': 0.5,
+                                  'anticipatoryLickValues': lambda x: x == 0}},
+}
 
 
 class TwoPRec(object):
@@ -43,7 +68,8 @@ class TwoPRec(object):
                  trial_end=None,
                  rec_type='trig_rew',
                  parse_stims=True,
-                 parse_by='stimulusOrientation',
+                 beh_type='visual_pavlov',
+                 parse_by=None,
                  subtypes=None,
                  trial_conditions=None,
                  n_px_remove_sides=10):
@@ -88,6 +114,21 @@ class TwoPRec(object):
             where imaging and behavior acquisitions are manually started,
             and synchronized with a simultaneously recorded .paq file
             that has frame times (imaging start) and reward echoes (beh start)
+        beh_type : str or None
+            Preset that drives parse_by and subtypes automatically.
+            'visual_pavlov' (default): parse_by='stimulusOrientation',
+                subtypes = _VISUAL_PAVLOV_SUBTYPES (conditions '0', '0.5', '1',
+                '0.5_rew', '0.5_norew', '0.5_prelick', '0.5_noprelick').
+            'auditory_pavlov': parse_by='stimulusType', no subtypes.
+            None: parse_by and subtypes must be provided explicitly.
+        parse_by : str or None
+            Override for the StimParserNew parse_by argument. When beh_type is
+            set this defaults to None and is resolved from beh_type; pass
+            explicitly to override the preset.
+        subtypes : dict or None
+            Override for the StimParserNew subtypes argument. When beh_type is
+            set this defaults to None and is resolved from beh_type; pass
+            explicitly to override or extend the preset.
         n_px_remove_sides : int
             Number of pixels to remove on each side of the frame (necessary if
             dealing with suite2p motion corrected tiffs, as these can
@@ -115,6 +156,22 @@ class TwoPRec(object):
         self._init_folders(enclosing_folder, folder_beh, folder_img,
                            dset_obj, dset_ind)
         self._init_ops(n_px_remove_sides, rec_type)
+
+        # resolve parse_by and subtypes from beh_type preset
+        # -------------
+        self.beh_type = beh_type
+        if beh_type == 'visual_pavlov':
+            if parse_by is None:
+                parse_by = 'stimulusOrientation'
+            if subtypes is None:
+                subtypes = _VISUAL_PAVLOV_SUBTYPES
+        elif beh_type == 'auditory_pavlov':
+            if parse_by is None:
+                parse_by = 'stimulusType'
+        elif beh_type is None:
+            if parse_by is None:
+                raise ValueError(
+                    "beh_type=None requires an explicit parse_by argument")
 
         # load behavioral data
         # -------------
@@ -418,57 +475,64 @@ class TwoPRec(object):
         return np.delete(tr_inds, ~np.isin(tr_inds, _valid))
 
     def _init_trial_conditions(self, use_int_cast=False):
-        """Initialize trial conditions, trial indices, and _trial_cond_map."""
+        """Initialize trial conditions, trial indices, and _trial_cond_map.
+
+        For beh_type='visual_pavlov', all conditions are provided by the
+        StimParserNew subtypes (_VISUAL_PAVLOV_SUBTYPES); the parsed_param
+        (orientation) loop is skipped and tr_conds is the ordered subtype keys.
+
+        For all other beh_types, the generic path builds tr_inds from
+        parsed_param values and appends any subtypes on top.
+        """
         self.beh.tr_inds = {}
-        if self.beh._stimparser.parse_by == 'stimulusOrientation':
-            self.beh.tr_conds = ['0', '0.5', '1', '0.5_rew', '0.5_norew']
-
-            self.beh.tr_inds['0'] = np.where(self.beh.stim.prob == 0)[0]
-            self.beh.tr_inds['0.5'] = np.where(self.beh.stim.prob == 0.5)[0]
-            self.beh.tr_inds['1'] = np.where(self.beh.stim.prob == 1)[0]
-            self.beh.tr_inds['0.5_rew'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.rew.delivered == True))[0]
-            self.beh.tr_inds['0.5_norew'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.rew.delivered == False))[0]
-
-            for tr_cond in self.beh.tr_conds:
-                self.beh.tr_inds[tr_cond] = \
-                    self._filter_trial_inds_to_stimrange(
-                        self.beh.tr_inds[tr_cond])
-
-            self.add_lickrates()
-
-            self.beh.tr_inds['0.5_prelick'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw > 0))[0]
-            self.beh.tr_inds['0.5_noprelick'] = np.where(np.logical_and(
-                self.beh.stim.prob == 0.5, self.beh.lick.antic_raw == 0))[0]
-            for tr_cond in ['0.5_prelick', '0.5_noprelick']:
-                self.beh.tr_inds[tr_cond] = \
-                    self._filter_trial_inds_to_stimrange(
-                        self.beh.tr_inds[tr_cond])
-        else:
-            self.beh.tr_conds = self.beh._stimparser.parsed_param.astype(str)
-            self.beh.tr_conds_outcome = (self.beh._stimparser.prob
-                                         * self.beh._stimparser.size)
-
-            for param_val in self.beh._stimparser.parsed_param:
-                match_val = int(param_val) if use_int_cast else param_val
-                self.beh.tr_inds[str(param_val)] = np.where(
-                    self.beh._stimparser._all_parsed_param == match_val)[0]
-
-            for tr_cond in self.beh.tr_conds:
-                self.beh.tr_inds[tr_cond] = \
-                    self._filter_trial_inds_to_stimrange(
-                        self.beh.tr_inds[tr_cond])
-
-            self.add_lickrates()
-
-        # append any subtypes defined in StimParserNew
         _sp = self.beh._stimparser
-        if hasattr(_sp, 'subtype_tr_inds') and _sp.subtype_tr_inds:
+
+        if getattr(self, 'beh_type', None) == 'visual_pavlov':
+            # All conditions are expressed as subtypes; skip the
+            # parsed_param (orientation) loop.
+            self.beh.tr_conds = list(_sp.subtype_tr_inds.keys())
             for _label, _inds in _sp.subtype_tr_inds.items():
                 self.beh.tr_inds[_label] = \
                     self._filter_trial_inds_to_stimrange(_inds)
+
+            # If anticipatoryLickValues was absent from the block file the
+            # prelick subtypes will be empty — fall back to add_lickrates().
+            if (not len(self.beh.tr_inds.get('0.5_prelick', []))
+                    and not len(self.beh.tr_inds.get('0.5_noprelick', []))):
+                self.add_lickrates()
+                self.beh.tr_inds['0.5_prelick'] = \
+                    self._filter_trial_inds_to_stimrange(np.where(
+                        np.logical_and(self.beh.stim.prob == 0.5,
+                                       self.beh.lick.antic_raw > 0))[0])
+                self.beh.tr_inds['0.5_noprelick'] = \
+                    self._filter_trial_inds_to_stimrange(np.where(
+                        np.logical_and(self.beh.stim.prob == 0.5,
+                                       self.beh.lick.antic_raw == 0))[0])
+                for _lk in ('0.5_prelick', '0.5_noprelick'):
+                    if _lk not in self.beh.tr_conds:
+                        self.beh.tr_conds.append(_lk)
+        else:
+            # Generic path: build tr_inds from parsed_param values.
+            self.beh.tr_conds = list(_sp.parsed_param.astype(str))
+            self.beh.tr_conds_outcome = _sp.prob * _sp.size
+
+            for param_val in _sp.parsed_param:
+                match_val = int(param_val) if use_int_cast else param_val
+                self.beh.tr_inds[str(param_val)] = np.where(
+                    _sp._all_parsed_param == match_val)[0]
+
+            for tr_cond in self.beh.tr_conds:
+                self.beh.tr_inds[tr_cond] = \
+                    self._filter_trial_inds_to_stimrange(
+                        self.beh.tr_inds[tr_cond])
+
+            self.add_lickrates()
+
+            # Append any subtypes defined in StimParserNew.
+            if hasattr(_sp, 'subtype_tr_inds') and _sp.subtype_tr_inds:
+                for _label, _inds in _sp.subtype_tr_inds.items():
+                    self.beh.tr_inds[_label] = \
+                        self._filter_trial_inds_to_stimrange(_inds)
 
         self._trial_cond_map = {}
         for _cond, _inds in self.beh.tr_inds.items():
@@ -697,17 +761,18 @@ class TwoPRec(object):
             Passed to _get_rec() / _get_rec_t(). Ignored in the base class;
             used by TwoPRec_DualColour to select the channel.
         orientation_extra_tr_conds : tuple[str, ...]
-            Additional trial-condition keys to include when parse_by is
-            'stimulusOrientation'. Defaults to prelick/no-prelick subsets.
+            Additional trial-condition keys to include when
+            beh_type='visual_pavlov'. Defaults to prelick/no-prelick subsets.
         orientation_colors : dict or None
-            Optional per-condition color mapping for
-            'stimulusOrientation'. If None, defaults are used.
+            Optional per-condition color mapping for beh_type='visual_pavlov'.
+            If None, defaults are used.
         orientation_linestyle : dict or None
             Optional per-condition linestyle mapping for
-            'stimulusOrientation'. If None, defaults are used.
+            beh_type='visual_pavlov'. If None, defaults are used.
         orientation_resid_tr_conds : tuple[str, ...] or None
-            Trial conditions to use for residual computation when parse_by is
-            'stimulusOrientation'. If None, all extracted conditions are used.
+            Trial conditions to use for residual computation when
+            beh_type='visual_pavlov'. If None, all extracted conditions are
+            used.
         """
         self.add_lickrates(t_prestim=t_pre,
                            t_poststim=t_post)
@@ -738,7 +803,7 @@ class TwoPRec(object):
         self.sector.params.resid_type = resid_type
 
         is_stimulus_orientation = (
-            self.beh._stimparser.parse_by == 'stimulusOrientation')
+            getattr(self, 'beh_type', None) == 'visual_pavlov')
         _tr_conds = list(self.beh.tr_conds)
         if is_stimulus_orientation:
             for _tr_cond in orientation_extra_tr_conds:
@@ -3574,6 +3639,9 @@ class TwoPRec_DualColour(TwoPRec):
                  ch_img_grn=2,
                  trial_end=None,
                  rec_type='trig_rew',
+                 beh_type='visual_pavlov',
+                 parse_by=None,
+                 subtypes=None,
                  n_px_remove_sides=10):
         """
         Loads a dual-colour 2p recording (two tiffs) and associated
@@ -3600,7 +3668,9 @@ class TwoPRec_DualColour(TwoPRec):
                          trial_end=trial_end,
                          rec_type=rec_type,
                          parse_stims=False,
-                         parse_by='stimulusOrientation',
+                         beh_type=beh_type,
+                         parse_by=parse_by,
+                         subtypes=subtypes,
                          n_px_remove_sides=n_px_remove_sides)
         return
 
